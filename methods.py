@@ -11,17 +11,11 @@ import pandas as pd
 import streamlit as st
 
 from scipy import signal
-from plotly.subplots import make_subplots
-import seaborn as sns
-
-import os
-import itertools
-import time
 
 import plotly.graph_objs as go
 import plotly.io as pio
-import plotly.express as px
-import datetime as date
+from plotly.subplots import make_subplots
+import seaborn as sns
 
 class methods:
     
