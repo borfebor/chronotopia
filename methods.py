@@ -346,7 +346,7 @@ class methods:
     
         example['hour_x'] = example[time_col].apply(lambda x: (x + 1 - np.ceil(x)) * 24)
         
-            
+        st.write(example.day_y.max(), type(example.day_y.max()))
         pio.templates.default = "simple_white"
         
         acto = make_subplots(rows=example.day_y.max(), cols=2, 
