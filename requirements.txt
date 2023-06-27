@@ -2,6 +2,5 @@ numpy
 pandas
 streamlit 
 scipy
-math
 plotly
 seaborn
