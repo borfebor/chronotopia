@@ -344,7 +344,7 @@ class methods:
         
         example['day_y'] = example[time_col].apply(lambda x: int(np.ceil(x)))
     
-        example['hour_x'] = example[time_col].apply(lambda x: int((x + 1 - np.ceil(x)) * 24))
+        example['hour_x'] = example[time_col].apply(lambda x: (x + 1 - np.ceil(x)) * 24)
         
             
         pio.templates.default = "simple_white"
