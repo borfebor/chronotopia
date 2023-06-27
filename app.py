@@ -9,6 +9,7 @@ Created on Fri Jun 16 09:51:30 2023
 import numpy as np
 import pandas as pd
 import streamlit as st
+import plotly.io as pio
 
 from methods import methods
 
