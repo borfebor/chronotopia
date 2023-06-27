@@ -338,18 +338,16 @@ class methods:
         return box, period_values[per_col]
     
     def actogram(plot, displayed_group, time_col, data_col):
-    
         
         example = plot[plot[data_col] == displayed_group].copy()
         
         example['day_y'] = example[time_col].apply(lambda x: int(np.ceil(x)))
     
         example['hour_x'] = example[time_col].apply(lambda x: (x + 1 - np.ceil(x)) * 24)
-        
-        st.write(example.day_y.max(), type(example.day_y.max()))
+    
         pio.templates.default = "simple_white"
         
-        acto = make_subplots(rows=example.day_y.max(), cols=2, 
+        acto = make_subplots(rows=int(example.day_y.max()), cols=2, 
                         shared_xaxes=True, shared_yaxes=True,
                         vertical_spacing=0, horizontal_spacing=0)
     
