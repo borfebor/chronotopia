@@ -11,8 +11,6 @@ import pandas as pd
 import streamlit as st
 
 from scipy import signal
-
-import math
 from plotly.subplots import make_subplots
 import seaborn as sns
 
@@ -350,9 +348,9 @@ class methods:
         
         example = plot[plot[data_col] == displayed_group].copy()
         
-        example['day_y'] = example[time_col].apply(lambda x: math.ceil(x))
+        example['day_y'] = example[time_col].apply(lambda x: np.ceil(x))
     
-        example['hour_x'] = example[time_col].apply(lambda x: (x + 1 - math.ceil(x)) * 24)
+        example['hour_x'] = example[time_col].apply(lambda x: (x + 1 - np.ceil(x)) * 24)
         
             
         pio.templates.default = "simple_white"
