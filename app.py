@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 import plotly.io as pio
 from PIL import Image
+import random
 
 from methods import methods
 
@@ -197,7 +198,7 @@ else:
                 'https://www.youtube.com/watch?v=VrDfSZ_6f4U',
                 'https://www.youtube.com/watch?v=iP6XpLQM2Cs',
                 ]
-    song = np.randint(0, len(playlist))
+    song = random.randint(0, len(playlist))
     st.video(playlist[song])
     
     
