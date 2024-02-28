@@ -10,11 +10,12 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.io as pio
+from PIL import Image
 
 from methods import methods
 
-
-st.title('chronotopia')
+image = Image.open('CHRONO.png')
+st.image(image)
 
 file = st.file_uploader(label='Add your timeseries')
 
