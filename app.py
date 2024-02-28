@@ -191,12 +191,14 @@ if file != None:
 else: 
                   
     st.header('While you format your data, please enjoy the best songs about clocks')
-    playlist = ['https://open.spotify.com/track/6LBmaJYwbLHfQwIreMCLlw?si=97523fb6e9664c49', 
+    playlist = ['https://www.youtube.com/watch?v=d020hcWA_Wg', 
                 'https://www.youtube.com/watch?v=ZgdufzXvjqw&pp=ygUVcm9jayBhcm91bmQgdGhlIGNsb2Nr',
                 'https://www.youtube.com/watch?v=7bLgGYFLhgQ&pp=ygUPc3RvcCB0aGUgY2xvY2tz',
                 'https://www.youtube.com/watch?v=Qr0-7Ds79zo&pp=ygUFdGltZSA%3D',
                 'https://www.youtube.com/watch?v=VrDfSZ_6f4U',
                 'https://www.youtube.com/watch?v=iP6XpLQM2Cs',
+                'https://www.youtube.com/watch?v=VdQY7BusJNU',
+                
                 ]
     
     song = random.randint(0, len(playlist)-1)
