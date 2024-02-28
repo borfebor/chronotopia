@@ -18,8 +18,7 @@ image = Image.open('CHRONO.png')
 st.image(image)
 
 file = st.file_uploader(label='Add your timeseries')
-st.header('While you format your data, please enjoy the best songs about clocks')
-st.video('https://www.youtube.com/watch?v=Izf1gZWFc8w&list=RDQMOMJYg3ssSi4&start_radio=1')
+
 
 
 if file != None:
@@ -187,7 +186,10 @@ if file != None:
         
                 acto = methods.actogram(plot, displayed_group, time_col, data_col)
         
-                st.plotly_chart(acto, theme="streamlit", use_container_width=False)                         
-
+                st.plotly_chart(acto, theme="streamlit", use_container_width=False)      
+else: 
+                  
+    st.header('While you format your data, please enjoy the best songs about clocks')
+    st.video('https://www.youtube.com/watch?v=Izf1gZWFc8w&list=RDQMOMJYg3ssSi4&start_radio=1')
     
     
