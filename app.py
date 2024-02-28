@@ -18,6 +18,8 @@ image = Image.open('CHRONO.png')
 st.image(image)
 
 file = st.file_uploader(label='Add your timeseries')
+st.header('While you format your data, please enjoy the best songs about clocks')
+st.video('https://www.youtube.com/watch?v=d020hcWA_Wg&pp=ygUGY2xvY2tz')
 
 
 if file != None:
