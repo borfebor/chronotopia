@@ -199,7 +199,7 @@ else:
                 'https://www.youtube.com/watch?v=iP6XpLQM2Cs',
                 ]
     
-    song = random.randint(0, len(playlist))
+    song = random.randint(0, len(playlist)-1)
     st.video(playlist[song])
     
     
