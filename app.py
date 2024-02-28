@@ -190,6 +190,14 @@ if file != None:
 else: 
                   
     st.header('While you format your data, please enjoy the best songs about clocks')
-    st.audio('https://open.spotify.com/track/6LBmaJYwbLHfQwIreMCLlw?si=97523fb6e9664c49')
+    playlist = ['https://open.spotify.com/track/6LBmaJYwbLHfQwIreMCLlw?si=97523fb6e9664c49', 
+                'https://www.youtube.com/watch?v=ZgdufzXvjqw&pp=ygUVcm9jayBhcm91bmQgdGhlIGNsb2Nr',
+                'https://www.youtube.com/watch?v=7bLgGYFLhgQ&pp=ygUPc3RvcCB0aGUgY2xvY2tz',
+                'https://www.youtube.com/watch?v=Qr0-7Ds79zo&pp=ygUFdGltZSA%3D',
+                'https://www.youtube.com/watch?v=VrDfSZ_6f4U',
+                'https://www.youtube.com/watch?v=iP6XpLQM2Cs',
+                ]
+    song = np.randint(0, len(playlist))
+    st.video(playlist[song])
     
     
