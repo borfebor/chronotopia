@@ -19,7 +19,7 @@ st.image(image)
 
 file = st.file_uploader(label='Add your timeseries')
 st.header('While you format your data, please enjoy the best songs about clocks')
-st.video('https://www.youtube.com/watch?v=d020hcWA_Wg&pp=ygUGY2xvY2tz')
+st.video('https://www.youtube.com/watch?v=Izf1gZWFc8w&list=RDQMOMJYg3ssSi4&start_radio=1')
 
 
 if file != None:
