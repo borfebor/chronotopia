@@ -33,9 +33,7 @@ if file != None:
     time_col = c1.selectbox('Select time column', df.columns)
     
     last_unit = c2.selectbox('Select time units', ['Day', 'Min', 'Hour', 'Sec'], 2)
-    
-    #last_unit = c3.selectbox('Select input last time unit', ['Sec', 'Min', 'Hour'], 0)
-    
+        
     translate = {'Sec': {'Sec':1, 'Min':1/60, 'Hour':1/3600, 'Day': 1/(24*60*60)},
                 'Min': {'Sec':60, 'Min':1, 'Hour':1/60, 'Day': 1/(24*60)},
                 'Hour': {'Sec':60*60, 'Min':60, 'Hour':1, 'Day': 1/24}, 
@@ -47,7 +45,15 @@ if file != None:
 
     df = methods.find_the_start(df, time_col=time_col)
     
-    df = methods.time_qc(df, time_col=time_col)
+    try:
+        
+        df = methods.time_qc(df, time_col=time_col)
+        
+    except:
+        
+        st.error('Oops! This is embarrassing but I do not understand the data, please check if the data is properly formated.')
+        st.table(df)
+        st.stop()
     
     df, time_col = methods.time_formater(df, time_col=time_col, last_unit=last_unit)
     
