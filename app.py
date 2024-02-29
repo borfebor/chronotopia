@@ -47,7 +47,7 @@ if file != None:
         
     try:
         
-        df = methods.time_qc(df, time_col=time_col)
+        #df = methods.time_qc(df, time_col=time_col)
         df, time_col = methods.time_formater(df, time_col=time_col, last_unit=last_unit)
         df, time_col = methods.time_translator(df, time_col=time_col, last_unit=last_unit, viz_unit=viz_uni)
 
