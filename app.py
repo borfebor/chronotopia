@@ -56,7 +56,6 @@ if file != None:
         st.error('Oops! This is embarrassing but I do not understand the data, please check if the data is properly formatted.')
         st.dataframe(df
                                , use_container_width=True)
-        st.stop()
     
     df, time_col = methods.time_translator(df, time_col=time_col, last_unit=last_unit, viz_unit=viz_uni)
     
