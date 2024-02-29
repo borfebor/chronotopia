@@ -28,13 +28,13 @@ if file != None:
     
     st.sidebar.header('Settings')
     
-    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+    c1, c2, c3 = st.columns([1, 1, 1])
     
     time_col = c1.selectbox('Select time column', df.columns)
     
-    time_format = c2.selectbox('Select time format', ['hh:mm:ss', 'mm:ss', 'ss', 'mm'], 0)
+    last_unit = c2.selectbox('Select time units', ['Day', 'Min', 'Hour', 'Sec'], 2)
     
-    last_unit = c3.selectbox('Select input last time unit', ['Sec', 'Min', 'Hour'], 0)
+    #last_unit = c3.selectbox('Select input last time unit', ['Sec', 'Min', 'Hour'], 0)
     
     translate = {'Sec': {'Sec':1, 'Min':1/60, 'Hour':1/3600, 'Day': 1/(24*60*60)},
                 'Min': {'Sec':60, 'Min':1, 'Hour':1/60, 'Day': 1/(24*60)},
@@ -43,7 +43,7 @@ if file != None:
 
     translate_options = list(translate[last_unit].keys())
     
-    viz_uni = c4.selectbox('Select desired time unit', translate_options, 3)
+    viz_uni = c3.selectbox('Select desired time unit', translate_options, 3)
 
     df = methods.find_the_start(df, time_col=time_col)
     
