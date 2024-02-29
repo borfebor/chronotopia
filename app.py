@@ -44,18 +44,19 @@ if file != None:
     viz_uni = c3.selectbox('Select desired time unit', translate_options, 3)
 
     df = methods.find_the_start(df, time_col=time_col)
-    
+
+    df = methods.time_qc(df, time_col=time_col)
+        
+          
     try:
-        
-        df = methods.time_qc(df, time_col=time_col)
-        
+
+        df, time_col = methods.time_formater(df, time_col=time_col, last_unit=last_unit)
+    
     except:
-        
+    
         st.error('Oops! This is embarrassing but I do not understand the data, please check if the data is properly formated.')
         st.table(df)
         st.stop()
-    
-    df, time_col = methods.time_formater(df, time_col=time_col, last_unit=last_unit)
     
     df, time_col = methods.time_translator(df, time_col=time_col, last_unit=last_unit, viz_unit=viz_uni)
     
