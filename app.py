@@ -176,12 +176,15 @@ if file != None:
             
             period_table.header('Calculated periods')
             
-            box, periods = methods.period_calculation(data, group_to_display, viz_uni)
+            try:
+                box, periods = methods.period_calculation(data, group_to_display, viz_uni)
             
-            period_table.dataframe(periods
+                period_table.dataframe(periods
                                    , use_container_width=True)
     
-            period_box.plotly_chart(box, theme="streamlit", use_container_width=True)
+                period_box.plotly_chart(box, theme="streamlit", use_container_width=True)
+            except:
+                st.error('sorry, I could not calculate the period')
             
         if viz_uni == 'Day':
                 
