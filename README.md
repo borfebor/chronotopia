@@ -1,5 +1,6 @@
 # chronotopia
 
+```bash
 # Clone the repository
 git clone https://github.com/borfebor/chronotopia.git
 
@@ -11,3 +12,4 @@ docker build -t chrono_app .
 
 # Start the Chrono app from the terminal
 docker run -p 8501:8501 chrono-app
+``
