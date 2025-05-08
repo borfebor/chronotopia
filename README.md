@@ -12,4 +12,4 @@ docker build -t chrono_app .
 
 # Start the Chrono app from the terminal
 docker run -p 8501:8501 chrono-app
-``
+``` 
