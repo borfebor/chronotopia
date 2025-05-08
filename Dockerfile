@@ -1,27 +1,17 @@
 FROM python:3.10-slim
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
     build-essential \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
+    curl \
+    software-properties-common \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements file into the container
-COPY requirements.txt .
+RUN git clone https://github.com/borfebor/chronotopia .
 
-# Install dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the application into the container
-COPY . .
+RUN pip3 install -r requirements.txt
 
 EXPOSE 8501
 
