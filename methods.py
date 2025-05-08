@@ -1,389 +1,258 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Fri Jun 16 09:56:54 2023
+Created on Mon May  5 11:39:58 2025
 
 @author: borfebor
 """
 
-import numpy as np
 import pandas as pd
+import numpy as np
 import streamlit as st
-
 from scipy import signal
-
-import plotly.graph_objs as go
-import plotly.io as pio
-from plotly.subplots import make_subplots
-import seaborn as sns
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+from io import BytesIO
 
 class methods:
     
+    def example_data():
+    
+        # Settings
+        minutes_per_day = 24 * 60
+        total_minutes = minutes_per_day * 10
+        interval = 10
+        n_timepoints = total_minutes // interval
+        time = np.arange(0, total_minutes, interval)
+        
+        # Initialize dataframe
+        df = pd.DataFrame({'Time': time})
+        
+        # Oscillating samples
+        np.random.seed(42)
+        n_samples = 10
+        n_oscillating = 8
+        
+        for i in range(n_samples):
+            if i < n_oscillating:
+                # Oscillating: sine wave with random phase and amplitude
+                phase = np.random.uniform(0, 2 * np.pi)
+                amplitude = np.random.uniform(0.8, 1.2)
+                noise = np.random.normal(0, 0.2, size=n_timepoints)
+                signal = amplitude * np.sin(2 * np.pi * time / (24 * 60) + phase) + noise + 1
+            else:
+                # Non-oscillating: flat with some noise
+                signal = np.random.normal(1, 0.2, size=n_timepoints)
+            
+            df[f'Sample_{i+1}'] = signal
+        
+        return df
+    
     def importer(file):
+        """
+        Loads a file (either in CSV, TSV, or XLSX format) into a Pandas DataFrame.
         
-        file_type = file.name.split('.')[1].upper()
+        Parameters:
+        file : str or file-like object
+            The file can be provided as a string representing the file path (in which case it's assumed to be on disk)
+            or as a file-like object (e.g., uploaded file in Streamlit).
         
-        if file_type == 'TXT':
-            
-            df = pd.read_csv(file, sep='\t')
-            df = methods.true_columns(df)
-            return df.reset_index(drop=True).dropna(axis=1, how='all')
-            
-        if file_type == 'CSV':
-            
-            df = pd.read_csv(file, sep=',')
-            df = methods.true_columns(df)
-            return df.reset_index(drop=True).dropna(axis=1, how='all')
-            
-        if file_type == 'XLSX':
-                
-            df = pd.read_excel(file)
-            df = methods.true_columns(df)
-            return df.reset_index(drop=True).dropna(axis=1, how='all')
+        Returns:
+        df : pandas.DataFrame or None
+            The file content as a DataFrame if it is of a supported type (CSV, TSV, XLSX), otherwise returns None.
+        """
         
+        if isinstance(file, str):
+            file_name = file
+        else:
+            file_name = file.name
+
+        if 'TXT' in file_name.upper() or 'TSV' in file_name.upper():
+            df = pd.read_csv(file, sep='\t')  # Tab-separated values
+        elif 'CSV' in file_name.upper():
+            df = pd.read_csv(file, sep=',')  # Comma-separated values
+        elif 'XLSX' in file_name.upper():
+            df = pd.read_excel(file)  # Excel file
         else:
             st.warning('Not compatible format')
+            return None  # Return None explicitly if format is unsupported
     
-    def true_columns(df):
+        return df
+    
+    def time_changer(x, unit='Minutes'):
+    
+        unit_dict = {'Minutes': x / 60,
+                    'Hours': x ,
+                    'Days': x * 24,
+                    'Seconds': x / 60**2 ,  }
         
-        candidates = [col for col in df.columns if 'UNNAMED' not in col.upper()]
+        return unit_dict[unit]
+    
+    def hourly(df, t_col):
+        return df[df[t_col] % 1 == 0]
+    
+    def linear_detrend(df, data_cols):
+        return signal.detrend(df[data_cols], type='linear')
+    
+    def rolling_mean(df, data_cols, window_size=10):
         
-        if len(candidates) != len(df.columns):
+        rolling_mean = df[data_cols].rolling(window=window_size, center=True).mean()
+        return df[data_cols] - rolling_mean
+    
+    def detrend(df, data_cols, t_col, method='None'):
+        if method == 'None':
+            return df[data_cols]
+        else:
+            win_size = int(1/(df[t_col].diff().mean()) * 10)
+            st.write(f"Rolling mean window size: {win_size}")
+            meth = {'Linear': methods.linear_detrend(df, data_cols),
+                   'Rolling mean': methods.rolling_mean(df, data_cols, win_size)}
+            return meth[method]
+        
+    def min_max(df, data_cols):
+        top = df[data_cols].max().max()
+        return (df[data_cols] - df[data_cols].min()) / (top - df[data_cols].min()) * 100
+    
+    def z_score(df, data_cols):
+        mean = df[data_cols].mean()
+        std = df[data_cols].std()
+        return (df[data_cols] - mean) / (std)
+
+    def normalize(df, data_cols, method='None'):
+        if method == 'None':
+            return df[data_cols]
+        else:
+            meth = {'Min-Max': methods.min_max(df, data_cols),
+                   'Z-Score': methods.z_score(df, data_cols)}
+            return meth[method]
+        
+    def generate_pdf_report(df, t_col, data_cols, ent=False, ent_days = 0, unit='Measured unit'):
+        buffer = BytesIO()
             
-            i = 0
+        with PdfPages(buffer) as pdf:
+            if ent == False:
+                for col in data_cols:  # Replace with your loop over data
+                    fig, ax = plt.subplots(1, figsize=(10, 5))
+                    ax.plot(df[t_col], df[col])
+                    ax.set_title(col)
+                    pdf.savefig(fig)
+                    plt.close(fig)
+            else: 
+                
+                for col in data_cols:  # Replace with your loop over data
+                    fig, ax = plt.subplots(1, 2, figsize=(15, 5))
+                    ent_data = df[df[t_col] <= ent_days * 24]
+                    fr_data = df[df[t_col] >= ent_days * 24]
+                    ax[0].plot(ent_data[t_col], ent_data[col])
+                    ax[0].set_title(f"Entrainment")
+                    
+                    # Get actual min and max from your data
+                    xmin = ent_data[t_col].min()
+                    xmax = ent_data[t_col].max()
+                    
+                    # Calculate start and end of xticks, rounded to nearest multiples of 24
+                    xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
+                    xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
+                    
+                    if ent == True:
+                        # Example for creating banded background every 12 hours
+                        start_time = xtick_start
+                        end_time = (start_time + 24 * ent_days) 
+                        
+                        # If Time is datetime, convert to numeric hours for easier spacing
+                        if np.issubdtype(ent_data[t_col].dtype, np.datetime64):
+                            time_unit = 'datetime'
+                            total_seconds = (end_time - start_time).total_seconds()
+                            num_bands = int(total_seconds // (12 * 3600)) 
+                            delta = pd.Timedelta(hours=12)
+                        else:
+                            time_unit = 'numeric'
+                            num_bands = int((end_time - start_time) // 12) 
+                            delta = 12
+                            
+                        for i in range(num_bands):
+                            band_start = start_time + i * delta
+                            band_end = band_start + delta
+                            if i % 2 == 0:  # Every other band
+                                ax[0].axvspan(band_start, band_end, color='lightblue', alpha=0.8)
+                                
+                    xticks = np.arange(xtick_start, xtick_end + 1, 24)
+                    ax[0].set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
+                    ax[0].set_xlabel('Time (h)')
+                    ax[0].set_ylabel(unit)
+                    
+                    # Get actual min and max from your data
+                    xmin = fr_data[t_col].min()
+                    xmax = fr_data[t_col].max()
+                    
+                    # Calculate start and end of xticks, rounded to nearest multiples of 24
+                    xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
+                    xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
+                    
+                    ax[1].plot(fr_data[t_col], fr_data[col])
+                    ax[1].set_title(f"Free Running")
+                    ax[1].set_xticks([i for i in range(int(xtick_end), int(xtick_end), 24)])
+                    ax[1].set_xlabel('Time (h)')
+                    ax[1].set_ylabel(unit)
+                    plt.suptitle(col)
+                    
+                    pdf.savefig(fig)
+                    plt.close(fig)
+                    
+                # Add metadata (optional)
+                d = pdf.infodict()
+                d['Title'] = 'Rhythmicity Report'
+                d['Author'] = 'Your Name'
+                # Add metadata (optional)
+                d = pdf.infodict()
+                d['Title'] = 'Rhythmicity Report'
+                d['Author'] = 'Your Name'
+    
+        buffer.seek(0)
+        return buffer
+        
+    def figure_w_entrainment(df, t_col, data_col, t_plot, p_col, ent, ent_days, unit):
+        fig = plt.figure(figsize=(10, 4))
+        
+        plot = df[(df[t_col] >= t_plot[0]) & (df[t_col] <= t_plot[1]) ]
+        plt.plot(plot[t_col], plot[p_col])
+        
+        # Get actual min and max from your data
+        xmin = plot[t_col].min()
+        xmax = plot[t_col].max()
+        
+        # Calculate start and end of xticks, rounded to nearest multiples of 24
+        xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
+        xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
+        
+        if ent == True:
+            # Example for creating banded background every 12 hours
+            start_time = xtick_start
+            end_time = (start_time + 24 * ent_days) 
             
-            while len(candidates) != len(df.columns):
-                
-                df.columns = df.iloc[i]
-                candidates = [col for col in df.columns if 'UNNAMED' not in col.upper()]
-                print(candidates)
-                i += 1
-                
+            # If Time is datetime, convert to numeric hours for easier spacing
+            if np.issubdtype(plot['Time'].dtype, np.datetime64):
+                time_unit = 'datetime'
+                total_seconds = (end_time - start_time).total_seconds()
+                num_bands = int(total_seconds // (12 * 3600)) 
+                delta = pd.Timedelta(hours=12)
             else:
+                time_unit = 'numeric'
+                num_bands = int((end_time - start_time) // 12) 
+                delta = 12
                 
-                df = df.iloc[(i+1):]    
-                
-        return df
-    
-    def find_the_start(df, time_col='Time'):
-    
-        cols = [col for col in df.columns if col != time_col]
-    
-        starting_row = 0
-        success = False
-    
-        while success == False:
-    
-            try:
-                df[cols].iloc[starting_row].astype(float)
-                success = True
-    
-            except:
-                starting_row += 1
-    
-        df = df.iloc[starting_row:]
-        df[cols] = df[cols].astype(float)
+            for i in range(num_bands):
+                band_start = start_time + i * delta
+                band_end = band_start + delta
+                if i % 2 == 0:  # Every other band
+                    plt.axvspan(band_start, band_end, color='lightblue', alpha=0.5)
         
-        return df.reset_index(drop=True)
-    
-    def time_qc(df, formatting='%H:%M:%S', time_col='Time', separator=':'):
-
-        length = len(formatting.split(separator))
-    
-        df[time_col] = np.where(df[time_col].str.split(separator).apply(lambda x: len(x)) != length,
-                 df[time_col] + ':00', df[time_col])
+        # Generate ticks at every 24 units
+        xticks = np.arange(xtick_start, xtick_end + 1, 24)
+        plt.xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
+        plt.xlabel('Time (h)')
+        plt.ylabel(unit)
+        return fig
+    #def normalization(df, cols, method):
         
-        return df
-    
-    def time_formater(df, formatting='%H:%M:%S', time_col='Time', separator=':', last_unit='Sec'):
-        
-        units = {'Sec': {'%d': 24*3600, '%H': 3600, '%M' : 60, '%S': 1},
-                'Min': {'%d': 24*60, '%H': 60, '%M' : 1, '%S': 1/60},
-                'Hour': {'%d': 24, '%H': 1, '%M' : 1/60, '%S': 1/3600}}
-        
-        multiplier = [units[last_unit][item] for item in formatting.split(separator)]
-        
-        new_time_col = f'Time ({last_unit})'
-    
-        df[new_time_col] = df[time_col].str.split(':').apply(lambda x: 
-                                                                   np.sum(np.array(np.float_(x)) * np.array(multiplier)))
-        
-        df = df.drop(columns=time_col)
-        
-        return df, new_time_col
-    
-    
-    def time_translator(df, time_col, last_unit='Sec', viz_unit='Hour'):
-    
-        translate = {'Sec': {'Sec':1, 'Min':1/60, 'Hour':1/3600, 'Day': 1/(24*60*60)},
-                    'Min': {'Sec':60, 'Min':1, 'Hour':1/60, 'Day': 1/(24*60)},
-                    'Hour': {'Sec':60*60, 'Min':60, 'Hour':1, 'Day': 1/24}, 
-                    'Day': {'Sec':60*60*24, 'Min':60*24, 'Hour':24, 'Day': 1}}
-        
-        df[time_col] = df[time_col] * translate[last_unit][viz_unit]
-        
-        new_time_col = f'Time ({viz_unit})'
-        
-        df = df.rename(columns={time_col:new_time_col})
-        
-        return df, new_time_col
-    
-    
-    def detrending(data, how='rolling', rolling_window=10):
-    
-        results = pd.DataFrame()
-        
-        for item in data.variable.unique():
-            
-            testing_data = data[data.variable == item].reset_index(drop=True)
-    
-            testing_data['detrending'] = how
-    
-            treated = testing_data.copy()
-            
-            if how == 'linear':
-    
-                treated['value'] = signal.detrend(treated['value'], type='linear')
-                
-            elif how == 'rolling':
-                
-                rolling_mean = treated.value.rolling(window=rolling_window, center=True).mean()
-                treated['value'] = treated.value - rolling_mean
-    
-            results = pd.concat([results, treated]).reset_index(drop=True)
-    
-        return results
-    
-    def normalization(data, how='z_score'):
-        
-        norm_test = data.copy()
-            
-        if how == 'None':
-                
-                pass
-        
-        else:
-            
-            for item in norm_test.variable.unique():
-            
-                if how == 'max_min':
-        
-                    norm_test['value'] = np.where(norm_test.variable == item,
-                                                 (norm_test.value - norm_test.value.mean()) / norm_test.value.std(),
-                                                  norm_test.value)
-        
-                elif how == 'z_score':
-        
-                    norm_test['value'] = np.where(norm_test.variable == item,
-                                                 (norm_test.value - norm_test.value.mean()) / norm_test.value.std(),
-                                                  norm_test.value)
-        
-            norm_test['detrending'] = norm_test.detrending + '_normalized'
-    
-        return norm_test
-    
-    def entrainment_cycles(period, cycles, exposure):
-
-        duration = period / exposure
-    
-        day_cycles = [duration,duration,period,period,None]
-    
-        i = 0
-        x_cycles = []
-    
-        while i < cycles:
-    
-            for x in day_cycles:
-                try:
-                    x_cycles.append(x + i)
-                except:
-                    x_cycles.append(x)
-            i += 1
-    
-        return x_cycles
-    
-    def lineplot(data, data_col, time_col, group_to_display, entrainment_true,
-                 periods, cycles, exposure, start_time, end_time, bg_colour, zeit_colour,
-                 peak_detection):
-    
-        plot = data.groupby([data_col, time_col]).apply(lambda x:
-                                                                                                  pd.Series({
-                                                         'value' : x.value.mean(),
-                                                         'upper' : x.value.mean() + x.value.std(),
-                                                         'lower' : x.value.mean() - x.value.std(),
-                                                                                                      
-                                                                                                  })).reset_index()
-            
-        maximum = plot[plot[data_col].isin(group_to_display)].upper.max()
-        minimum = plot[plot[data_col].isin(group_to_display)].lower.min()
-            
-        fig = go.Figure()
-          
-        colors = sns.color_palette('cubehelix', len(group_to_display))
-        
-        if entrainment_true == True:
-            
-            y_cycles = [minimum,maximum,maximum,minimum,None] * cycles
-            x_cycles = methods.entrainment_cycles(periods, cycles, exposure)
-                
-            fig.add_trace(
-                go.Scatter(
-                    name='Entrainment',
-                    y=y_cycles, 
-                    x=x_cycles,
-                    line=dict(color=bg_colour,width=0),
-                    fill="toself", fillcolor=zeit_colour,))
-        else:
-            bg_colour = '#FFFFFF'
-            
-        periods = []
-        
-        for num, item in enumerate(group_to_display):
-            
-           
-            sorted_plot = plot[plot[data_col] == item]
-            
-            if peak_detection == True:
-                
-                period_data = sorted_plot[(sorted_plot[time_col] > start_time) &
-                                          (sorted_plot[time_col] < end_time)]
-                
-                
-                peaks, heigth = signal.find_peaks(period_data.value, height=period_data.value.mean())
-                
-                fig.add_trace(go.Scatter(
-                            name='Peak',
-                            x=period_data.reset_index().iloc[peaks][time_col],
-                            y=heigth['peak_heights'],
-                            mode='markers',
-                            showlegend=False
-                        ))
-                
-                period = np.diff(period_data.reset_index().iloc[peaks][time_col].values).mean()
-                periods.append([item, period])
-            
-            fig.add_trace(
-                        go.Scatter(
-                            name=f'{item}',
-                            x=sorted_plot[time_col],
-                            y=sorted_plot['value'],
-                            mode='lines',
-                            line=dict(color=f'rgb{colors[num]}'),
-                        ))
-            fig.add_trace(
-                        go.Scatter(
-                            name='Upper Bound',
-                            x=sorted_plot[time_col],
-                            y=sorted_plot['upper'],
-                            mode='lines',
-                            marker=dict(color="#444"),
-                            line=dict(width=0),
-                            showlegend=False
-                        ))
-            fig.add_trace(
-                        go.Scatter(
-                            name='Lower Bound',
-                            x=sorted_plot[time_col],
-                            y=sorted_plot['lower'],
-                            marker=dict(color="#444"),
-                            line=dict(width=0),
-                            mode='lines',
-                            fillcolor=f'rgba{colors[num]+tuple([0.2])}',
-                            fill='tonexty',
-                            showlegend=False
-                        )
-                    )
-              
-        fig.update_layout(
-                yaxis_title='Luminescense (UA) Detrended, normalized',
-                xaxis_title=f'{time_col}',
-                hovermode="x",
-                plot_bgcolor=bg_colour,
-                yaxis_range=[minimum,maximum]
-            )
-        
-        return plot, maximum, minimum, fig, periods
-    
-    def period_calculation(data, group_to_display, viz_uni):
-        
-        colors = sns.color_palette('cubehelix', len(group_to_display)).as_hex()
-    
-        per_col = f'Period ({viz_uni})'
-        
-        mean_periods = data[data.Group.isin(group_to_display)].groupby(['Group', 'Replicate']).apply(lambda x: pd.Series({
-                'Period': np.mean(np.diff(signal.find_peaks(x['value'], height=x.value.mean())[0]))})).reset_index()
-        
-        period_values = mean_periods.groupby('Group').apply(lambda x: pd.Series({
-            'Periods' : x.Period,
-               per_col: f'{np.round(x.Period.mean(), 2)} ± {np.round(x.Period.std(), 2)}'}))
-        
-        box = go.Figure()
-        
-        for num, group in enumerate(group_to_display):
-            
-            box.add_trace(go.Box(
-                        y=period_values.loc[group]['Periods'],
-                        x=[group] * len(period_values.loc[group]['Periods']),
-                        name=group,
-                        fillcolor=colors[num],
-                        line_color='#000000'
-                    ))
-        
-        
-        box.update_layout(
-                yaxis_title=per_col,
-                hovermode="x",
-            )
-        
-        return box, period_values[per_col]
-    
-    def actogram(plot, displayed_group, time_col, data_col):
-        
-        example = plot[plot[data_col] == displayed_group].copy()
-        
-        example['day_y'] = example[time_col].apply(lambda x: int(np.ceil(x)))
-    
-        example['hour_x'] = example[time_col].apply(lambda x: (x + 1 - np.ceil(x)) * 24)
-    
-        pio.templates.default = "simple_white"
-        
-        acto = make_subplots(rows=int(example.day_y.max()), cols=2, 
-                        shared_xaxes=True, shared_yaxes=True,
-                        vertical_spacing=0, horizontal_spacing=0)
-    
-        for num, item in enumerate(example.dropna(subset='value')['day_y'].unique()):
-            
-            plot_left = example[(example.day_y == item) & (example.value > example.value.mean())]
-            
-            acto.add_trace(
-                go.Scatter(x=plot_left.hour_x, y=plot_left.value, name="yaxis data", mode='lines',
-                            line=dict(color='#287B8F'),
-                            fill='tozeroy', showlegend=False),
-                
-                row=num+1, col=2)
-            
-            plot_right = example[(example.day_y == item-1) & (example.value > 0)]
-            
-            acto.add_trace(
-                    go.Scatter(x=plot_right.hour_x, y=plot_right.value, name="yaxis data", mode='lines',
-                                line=dict(color='#287B8F'), showlegend=False,
-                                fill='tozeroy'),
-                    row=num+1, col=1)
-            
-            acto.update_yaxes(title=f'{item}',
-                             range=[0, (example.value.max()+example.value.std())], 
-                             row=num+1, col=1,
-                            showticklabels=False)
-            acto.update_xaxes(range=[0, 24], 
-                              tickvals = [0, 6, 12, 18, 24],
-                             row=num+1, col=1)
-            acto.update_xaxes(range=[0, 24], 
-                              tickvals = [6, 12, 18, 24],
-                             row=num+1, col=2)
-            
-        acto.update_layout(
-            width = 500,
-            height = 600
-            )  
-        
-        return acto
+    #    for col in ps.columns:

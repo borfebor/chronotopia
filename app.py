@@ -1,215 +1,216 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Fri Jun 16 09:51:30 2023
+Created on Mon May  5 10:55:41 2025
 
 @author: borfebor
 """
 
-import numpy as np
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 import streamlit as st
-import plotly.io as pio
-from PIL import Image
-import random
-
 from methods import methods
 
-image = Image.open('CHRONO.png')
-st.image(image)
+def convert_for_download(df):
+        return df.to_csv(sep='\t').encode("utf-8")
+    
+st.sidebar.header('Data uploading')
 
-file = st.file_uploader(label='Add your timeseries')
+uploaded_file = st.sidebar.file_uploader('Upload your data',
+                        type=['csv','txt','xlsx', 'tsv'])
+example = st.sidebar.toggle('Check example dataset')
 
+if example:
+    uploaded_file = 'hola'
 
+if uploaded_file is None:
+    #st.image(instructions)
+    st.markdown("""
+                ### Example Time Series Dataset
 
-if file != None:
+| Time (min) |   A   |   B   |   C   |   D   |   E   |
+|------------|-------|-------|-------|-------|-------|
+|     0      | 1.23  | 4.56  | 3.21  | 2.34  | 5.67  |
+|    10      | 1.45  | 4.80  | 3.00  | 2.50  | 5.50  |
+|    20      | 1.60  | 4.90  | 3.10  | 2.70  | 5.30  |
+|    30      | 1.75  | 5.10  | 3.30  | 2.80  | 5.20  |
+|    40      | 1.90  | 5.20  | 3.50  | 3.00  | 5.00  |
+|    50      | 2.00  | 5.30  | 3.60  | 3.10  | 4.90  |
+                """)
+    st.stop()
+
+if uploaded_file is not None:
+    messages = st.empty()
+    messages2 = st.empty()
+
+    st.header('Data Analysis')
+    c1, c2 = st.columns(2)
     
-    df = methods.importer(file)
-    
-    st.sidebar.header('Settings')
-    
-    c1, c2, c3 = st.columns([1, 1, 1])
-    
-    time_col = c1.selectbox('Select time column', df.columns)
-    
-    last_unit = c2.selectbox('Select time units', ['Day', 'Min', 'Hour', 'Sec'], 2)
+    if uploaded_file == 'hola':
+        df = methods.example_data()
+    else:
+        df = methods.importer(uploaded_file)
         
-    translate = {'Sec': {'Sec':1, 'Min':1/60, 'Hour':1/3600, 'Day': 1/(24*60*60)},
-                'Min': {'Sec':60, 'Min':1, 'Hour':1/60, 'Day': 1/(24*60)},
-                'Hour': {'Sec':60*60, 'Min':60, 'Hour':1, 'Day': 1/24}, 
-                'Day': {'Sec':60*60*24, 'Min':60*24, 'Hour':24, 'Day': 1}}
+    layout = st.sidebar.checkbox('Include experimental layout', False)
 
-    translate_options = list(translate[last_unit].keys())
+    t_col = st.sidebar.selectbox('Time column', [col for col in df.columns] )
+    t_unit = st.sidebar.selectbox('Time unit', ['Minutes', 'Hours', 'Days', 'Seconds'])
+    data_cols = [col for col in df.columns if col != t_col]
     
-    viz_uni = c3.selectbox('Select desired time unit', translate_options, 3)
+    if layout == True:
 
-    df = methods.find_the_start(df, time_col=time_col)
+        st.sidebar.header('Experimental groups')
+        template = pd.DataFrame(data_cols, columns=['Sample'])
+        template['Condition'] = 'YOUR_CONDITION'
         
-    try:
+        csv = convert_for_download(template)
         
-        #df = methods.time_qc(df, time_col=time_col)
-        df, time_col = methods.time_formater(df, time_col=time_col, last_unit=last_unit)
-        df, time_col = methods.time_translator(df, time_col=time_col, last_unit=last_unit, viz_unit=viz_uni)
-
-    except:
-        st.balloons()
-        #df = methods.time_qc(df, time_col=time_col)
-        #st.error('Oops! This is embarrassing but I do not understand the data, please check if the data is properly formatted.')
-        # st.dataframe(df
-        #                       , use_container_width=True)
-    
-    items = df.columns.to_list()
-    items.remove(time_col)
-
-    columns = pd.DataFrame(items, columns = ['Column'])
-    columns['Group'] = pd.Series(items)
-    columns['Replicate'] = pd.Series(items)
-    columns = columns.set_index('Column')
-    
-    apply = st.sidebar.checkbox('Apply groups')
-
-    params_holder = st.sidebar.empty()
-    
-    export_params = columns.to_csv(sep='\t').encode('utf-8')
-
-    st.sidebar.download_button(
-          label="Get groups template",
-          data=export_params,
-          file_name='params.txt',
-          mime='text/csv',
-          help='I will help you',
-          use_container_width=True,
-      )
-    
-    groups_file = st.sidebar.file_uploader(label='Or upload your groups here')
-    
-    if groups_file != None:
-    
-        columns = methods.importer(groups_file)
-        columns = columns.set_index(columns.columns[0])
+        st.sidebar.download_button(label="Download layout template",
+                        data=csv,
+                        file_name='sample_layout_template.txt',
+                        mime='text/csv',
+                        type='primary',
+                        help='Here you can download your data',
+                        use_container_width=True,)
+        layout_file = st.sidebar.file_uploader('Upload your experimental layout',
+                                type=['csv','txt','xlsx', 'tsv'])
         
-    experiments = params_holder.data_editor(columns)
-    experiments['col_name'] = experiments.Group + '_' + experiments.Replicate
-    
-    params = experiments.to_dict()
-    
-    df = df.rename(columns=params['col_name'])
-    
-    col1, col2 = st.columns([1,1])
-    
-    table = st.expander(label='Your data')
-    
-    table.dataframe(df.set_index(time_col))
-    
-    normalization = col1.selectbox('Select how to normalize the data', ['None', 'max_min', 'z_score'], 0)
-    
-    detrending = col2.selectbox('Select how to detrend the data', ['None', 'linear', 'rolling'], 0)
-    
-    
-    if apply == True:
-    
-        data = df.melt(id_vars=time_col, 
-                       value_vars=list(params['col_name'].values()), var_name='variable')
-        
-        data[['Group', 'Replicate']] = data['variable'].str.rsplit('_', n=1, expand=True)
-        
-        
-        data = methods.detrending(data,  how=detrending, rolling_window=10)
+        if layout_file is not None:
+            layout_df = methods.importer(layout_file)
             
-        data = methods.normalization(data,  how=normalization)
+            layout_df['name'] = layout_df.Condition + " - [" + layout_df.Sample + "]"
+            
+            name_dict = dict(zip(layout_df.Sample, layout_df.name))
+            df = df.rename(columns=name_dict)
+            data_cols = [col for col in df.columns if col != t_col]
+
     
-        pio.templates.default = "simple_white"
+    df[t_col] = df[t_col].apply(lambda x: methods.time_changer(x, t_unit))
+    
+    st.sidebar.header('Analysis paramenters')
+    
+    hourly = st.sidebar.checkbox('Smoothen the data hourly', False)
+    ent = st.sidebar.checkbox('Include entrainment data', False)
+    
+    if hourly == True:
+        df = methods.hourly(df, t_col)
+    
+    if ent == True:
+        ent_days = st.select_slider('Days of entrainment', [i for i in range(1, 6)])
+    
+    norm_meth = c1.selectbox('Normalization', ['None', 'Z-Score', 'Min-Max'])
+    detrend_meth = c2.selectbox('Detrending', ['None', 'Linear', 'Rolling mean'])
+    
+    df[data_cols] = methods.detrend(df, data_cols, t_col, detrend_meth)
+    df[data_cols] = methods.normalize(df, data_cols, norm_meth)
+    
+    df = df.dropna()
+    
+    st.header('Data Preview')
         
-             
-        group_to_display = st.multiselect('Select group(s) to display', 
-                                           list(data.Group.unique()), 
-                                           list(data.Group.unique())[:3])
+    duration = np.round(df[t_col].max(),1)
+    st.write(f"Experiment with data for {duration} hours")
+    
+    preview = st.empty()
+    p_col = st.selectbox('Column to preview', data_cols)
+    unit = st.text_input('Data unit', 'Measured unit')
+    t_plot = st.slider('Time period to plot', df[t_col].min(), df[t_col].max(), (df[t_col].min(), df[t_col].max()))
+
+    pre_plot = st.empty()
+    short = df[[t_col] + data_cols[:5]].iloc[:5]
+    preview.table(short)
+    
+    fig = plt.figure(figsize=(10, 4))
+    
+    plot = df[(df[t_col] >= t_plot[0]) & (df[t_col] <= t_plot[1]) ]
+    plt.plot(plot[t_col], plot[p_col])
+    
+    # Get actual min and max from your data
+    xmin = plot[t_col].min()
+    xmax = plot[t_col].max()
+    
+    # Calculate start and end of xticks, rounded to nearest multiples of 24
+    xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
+    xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
+    
+    if ent == True:
+        # Example for creating banded background every 12 hours
+        start_time = xtick_start
+        end_time = (start_time + 24 * ent_days) 
         
-        entrainment_box = st.expander('Entrainment settings')
-        
-        ent1, ent2, ent3, ent4 = entrainment_box.columns(4)
-        
-        entrainment_true = ent1.checkbox('Add entrainment data', True)
-        cycles = ent2.slider('Number of cycles', int(data[time_col].min()) ,
-                                 int(data[time_col].max()), 3)
-        periods = ent3.slider(f'Period length ({viz_uni})', int(data[time_col].min()) ,
-                                 int(data[time_col].max()), 1)
-        exposure = ent4.slider('Cycles ratio (1 : x)', 2,
-                                 int(data[time_col].max()), 2)
-            
-        color1, colors2 = entrainment_box.columns(2)
-            
-        bg_colour = color1.color_picker('Pick A Background Color', '#FFFFFF')
-        zeit_colour = colors2.color_picker('Pick A Zeitgeber Color', '#FFD6C2')
-        
-        period_box = st.expander('Period calculation settings')
-        
-        peak_detection = period_box.checkbox('Find peaks and calculate period', True)
-        
-        if peak_detection == True:
-        
-            start_time, end_time = period_box.select_slider(
-                        'Select the time frame for period calculation',
-                        options=np.round(data[time_col].unique()),
-                        value=(np.round(data[time_col].min()), np.round(data[time_col].max())))
-        
-        if len(group_to_display) < 2:
-            
-            data_col = 'variable'
-            group_to_display = data[data['Group'].isin(group_to_display)][data_col].unique()
-            
+        # If Time is datetime, convert to numeric hours for easier spacing
+        if np.issubdtype(plot['Time'].dtype, np.datetime64):
+            time_unit = 'datetime'
+            total_seconds = (end_time - start_time).total_seconds()
+            num_bands = int(total_seconds // (12 * 3600)) 
+            delta = pd.Timedelta(hours=12)
         else:
-            data_col = 'Group'
+            time_unit = 'numeric'
+            num_bands = int((end_time - start_time) // 12) 
+            delta = 12
             
-            
-        plot, maximum, minimum, fig, periods = methods.lineplot(data, data_col, time_col, 
-                                                                group_to_display, entrainment_true, 
-                                                                periods, cycles, exposure, start_time, end_time,
-                                                                bg_colour, zeit_colour, peak_detection)
-        
-        
-        st.plotly_chart(fig, theme="streamlit", use_container_width=True)
-        
-        if len(periods) > 0:
-            
-            period_table, period_box = st.columns(2)
-            
-            period_table.header('Calculated periods')
-            
-            try:
-                box, periods = methods.period_calculation(data, group_to_display, viz_uni)
-            
-                period_table.dataframe(periods
-                                   , use_container_width=True)
+        for i in range(num_bands):
+            band_start = start_time + i * delta
+            band_end = band_start + delta
+            if i % 2 == 0:  # Every other band
+                plt.axvspan(band_start, band_end, color='lightblue', alpha=0.5)
     
-                period_box.plotly_chart(box, theme="streamlit", use_container_width=True)
-            except:
-                st.error('sorry, I could not calculate the period')
+    # Generate ticks at every 24 units
+    xticks = np.arange(xtick_start, xtick_end + 1, 24)
+    plt.xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
+    plt.xlabel('Time (h)')
+    plt.ylabel(unit)
+    pre_plot.pyplot(fig)
+    
+    csv = convert_for_download(df)
+    
+    st.sidebar.header('Final steps')
+
+    analysis_button = st.sidebar.button('Run analysis', type='primary', use_container_width=True)
+    st.sidebar.download_button(label="Download clean data",
+                    data=csv,
+                    file_name='clean_data.txt',
+                    mime='text/csv',
+                    help='Here you can download your data',
+                    use_container_width=True,)
+    
+    pdf_buffer = methods.generate_pdf_report(df, t_col, data_cols, ent, ent_days, unit)
+    st.sidebar.download_button(
+            label="📄 Download report",
+            data=pdf_buffer,
+            file_name="rhythmicity_report.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+    
+    if analysis_button:
+        
+        with st.spinner("Running R script..."):
+
+            # Transpose and set index
+            rdf = df.transpose()
             
-        if viz_uni == 'Day':
+            messages.warning("""
+            Hi,
+            
+            I am still working on the implementation of this feature. In the meantime, you can download the formated data to run it in Metacycle.
+            
+            Best,
+            
+            Borja""")
+            csv = convert_for_download(rdf)
+            
+            messages2.download_button(label="Download data for Metacycle testing",
+                            data=csv,
+                            file_name='data_for_metacycle.txt',
+                            mime='text/csv',
+                            type='primary',
+                            help='Here you can download your data',
+                            use_container_width=True,)
+            
+                #st.dataframe(result_df)
                 
-                st.header('Double plot actogram')
-                displayed_group = st.selectbox('Select group to display', 
-                                                   group_to_display, 
-                                                   0)
-        
-                acto = methods.actogram(plot, displayed_group, time_col, data_col)
-        
-                st.plotly_chart(acto, theme="streamlit", use_container_width=False)      
-else: 
-                  
-    st.header('While you format your data, please enjoy the best songs about clocks')
-    playlist = ['https://www.youtube.com/watch?v=d020hcWA_Wg', 
-                'https://www.youtube.com/watch?v=ZgdufzXvjqw&pp=ygUVcm9jayBhcm91bmQgdGhlIGNsb2Nr',
-                'https://www.youtube.com/watch?v=7bLgGYFLhgQ&pp=ygUPc3RvcCB0aGUgY2xvY2tz',
-                'https://www.youtube.com/watch?v=Qr0-7Ds79zo&pp=ygUFdGltZSA%3D',
-                'https://www.youtube.com/watch?v=VrDfSZ_6f4U',
-                'https://www.youtube.com/watch?v=iP6XpLQM2Cs',
-                'https://www.youtube.com/watch?v=VdQY7BusJNU',
-                
-                ]
-    
-    song = random.randint(0, len(playlist)-1)
-    st.video(playlist[song])
-    
-    
+
+
+
