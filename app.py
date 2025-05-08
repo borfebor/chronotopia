@@ -98,6 +98,8 @@ if uploaded_file is not None:
     
     if ent == True:
         ent_days = st.select_slider('Days of entrainment', [i for i in range(1, 6)])
+    else:
+        ent_days = 0
     
     norm_meth = c1.selectbox('Normalization', ['None', 'Z-Score', 'Min-Max'])
     detrend_meth = c2.selectbox('Detrending', ['None', 'Linear', 'Rolling mean'])
