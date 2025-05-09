@@ -15,7 +15,7 @@ cd chronotopia
 docker build -t chronotopia . 
 
 # Start the Chrono app from the terminal
-docker run -p 8501:8501 chrono-app
+docker run -p 8501:8501 chronotopia
 ``` 
 
 3. Access the Web Interface:
