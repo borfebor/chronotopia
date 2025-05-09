@@ -126,13 +126,14 @@ class methods:
                    'Z-Score': methods.z_score(df, data_cols)}
             return meth[method]
         
-    def generate_pdf_report(df, t_col, data_cols, ent=False, ent_days = 0, unit='Measured unit'):
+    def generate_pdf_report(df, t_col, data_cols, ent=False, ent_days = 0, unit='Measured unit', bg_color='white', band_color='lightblue'):
         buffer = BytesIO()
             
         with PdfPages(buffer) as pdf:
             if ent == False:
                 for col in data_cols:  # Replace with your loop over data
                     fig, ax = plt.subplots(1, figsize=(10, 5))
+                    ax.set_facecolor(bg_color)
                     ax.plot(df[t_col], df[col])
                     ax.set_title(col)
                     pdf.savefig(fig)
@@ -141,6 +142,8 @@ class methods:
                 
                 for col in data_cols:  # Replace with your loop over data
                     fig, ax = plt.subplots(1, 2, figsize=(15, 5))
+                    for i in range(2):
+                        ax[i].set_facecolor(bg_color)
                     ent_data = df[df[t_col] <= ent_days * 24]
                     fr_data = df[df[t_col] >= ent_days * 24]
                     ax[0].plot(ent_data[t_col], ent_data[col])
@@ -174,7 +177,7 @@ class methods:
                             band_start = start_time + i * delta
                             band_end = band_start + delta
                             if i % 2 == 0:  # Every other band
-                                ax[0].axvspan(band_start, band_end, color='lightblue', alpha=0.8)
+                                ax[0].axvspan(band_start, band_end, color=band_color, alpha=0.8)
                                 
                     xticks = np.arange(xtick_start, xtick_end + 1, 24)
                     ax[0].set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
@@ -253,6 +256,29 @@ class methods:
         plt.xlabel('Time (h)')
         plt.ylabel(unit)
         return fig
+    
+    def plot_entrainment(fig, plot, xtick_start, xtick_end, ent_days, T=24, color='#EBEBEB'):
+        
+            start_time = xtick_start
+            end_time = (start_time + T * ent_days) 
+            
+            # If Time is datetime, convert to numeric hours for easier spacing
+            if np.issubdtype(plot['Time'].dtype, np.datetime64):
+                time_unit = 'datetime'
+                total_seconds = (end_time - start_time).total_seconds()
+                num_bands = int(total_seconds // (12 * 3600)) 
+                delta = pd.Timedelta(hours=12)
+            else:
+                time_unit = 'numeric'
+                num_bands = int((end_time - start_time) // (T/2)) 
+                delta = (T/2)
+                
+            for i in range(num_bands):
+                band_start = start_time + i * delta
+                band_end = band_start + delta
+                if i % 2 == 0:  # Every other band
+                    plt.axvspan(band_start, band_end, color=color, alpha=1)
+            return fig
     #def normalization(df, cols, method):
         
     #    for col in ps.columns:

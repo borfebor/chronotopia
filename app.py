@@ -12,9 +12,20 @@ import matplotlib.pyplot as plt
 import streamlit as st
 from methods import methods
 
+from PIL import Image
+import subprocess
+import tempfile
+import os
+
+image = Image.open('logo.png')
+st.sidebar.image(image)
+
 def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
+    
+version = 0.1
+st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
 uploaded_file = st.sidebar.file_uploader('Upload your data',
@@ -38,6 +49,7 @@ if uploaded_file is None:
 |    40      | 1.90  | 5.20  | 3.50  | 3.00  | 5.00  |
 |    50      | 2.00  | 5.30  | 3.60  | 3.10  | 4.90  |
                 """)
+
     st.stop()
 
 if uploaded_file is not None:
@@ -52,7 +64,7 @@ if uploaded_file is not None:
     else:
         df = methods.importer(uploaded_file)
         
-    layout = st.sidebar.checkbox('Include experimental layout', False)
+    layout = st.sidebar.toggle('Include experimental layout', False)
 
     t_col = st.sidebar.selectbox('Time column', [col for col in df.columns] )
     t_unit = st.sidebar.selectbox('Time unit', ['Minutes', 'Hours', 'Days', 'Seconds'])
@@ -90,14 +102,46 @@ if uploaded_file is not None:
     
     st.sidebar.header('Analysis paramenters')
     
-    hourly = st.sidebar.checkbox('Smoothen the data hourly', False)
-    ent = st.sidebar.checkbox('Include entrainment data', False)
+    hourly = st.sidebar.toggle('Smoothen the data hourly', False)
+    ent = st.sidebar.toggle('Include entrainment data', False)
+    test_a_bit = st.sidebar.toggle('Select a timeframe for testing', False)
+    
+    if test_a_bit:
+        t1, t2 = st.sidebar.columns(2)
+        t_start_test = t1.number_input('Minimum time', int(df[t_col].min()), int(df[t_col].max()), int(df[t_col].min()),  step=1)    
+        t_end_test = t2.number_input('Last time', int(df[df[t_col] > t_start_test][t_col].min()), int(df[df[t_col] > t_start_test][t_col].max()), int(df[df[t_col] > t_start_test][t_col].max()), step=1) 
+    else:
+        t_start_test, t_end_test = df[t_col].min(), df[t_col].max()  
+        
+    max_days = int(df[t_col].max() / 24) + 1
+    
+    backgroud = {'None': 'white',
+                 'Darkness': '#EBEBEB' ,
+                 'Light':'#FFD685' ,
+                 'Warm': '#fbe3d4',
+                 'Cold': '#dbeaf2'}
+    
+    bg_color = backgroud['None']
+    ent_color = backgroud['None']
     
     if hourly == True:
         df = methods.hourly(df, t_col)
     
     if ent == True:
-        ent_days = st.select_slider('Days of entrainment', [i for i in range(1, 6)])
+        col1, col2, col3, col4 = st.columns(4)
+        ent_days = col1.number_input('Entrainment cycles', 1, max_days, 1,  step=1) 
+        T = col2.number_input('T cycle', 6, 48, 24,  step=1) 
+        cycle_type = col3.selectbox('Zeitgeber type', ['Darkness - Light', 'Light - Darkness', 'Cold - Warm', 'Warm - Cold'], 0) 
+        
+        parts = [part.strip() for part in cycle_type.split("-")]
+        fr_options = [i for i in ['Light', 'Darkness', 'Cold', 'Warm'] if i in parts]
+
+        freerun_type = col4.selectbox('Free running conditions', fr_options, 1) 
+        bg_color = backgroud[freerun_type]
+        #band_color = parts.remove(freerun_type)
+        band_type = [i for i in parts if i != freerun_type][0]
+        ent_color = backgroud[band_type]
+        #st.write(ent_color)
     else:
         ent_days = 0
     
@@ -117,15 +161,21 @@ if uploaded_file is not None:
     preview = st.empty()
     p_col = st.selectbox('Column to preview', data_cols)
     unit = st.text_input('Data unit', 'Measured unit')
-    t_plot = st.slider('Time period to plot', df[t_col].min(), df[t_col].max(), (df[t_col].min(), df[t_col].max()))
+    
+    c1, c2 = st.columns(2)
+    t0 = c1.number_input('Starting time to plot', int(df[t_col].min()), int(df[t_col].max()), int(df[t_col].min()),  step=1)    
+    t1 = c2.number_input('End time to plot', int(df[df[t_col] > t0][t_col].min()), int(df[df[t_col] > t0][t_col].max()), int(df[df[t_col] > t0][t_col].max()), step=1) 
+    #t_plot = st.slider('Time period to plot', df[t_col].min(), df[t_col].max(), (df[t_col].min(), df[t_col].max()))
 
     pre_plot = st.empty()
     short = df[[t_col] + data_cols[:5]].iloc[:5]
     preview.table(short)
-    
+
     fig = plt.figure(figsize=(10, 4))
+    ax = plt.axes()
+    ax.set_facecolor(bg_color)
     
-    plot = df[(df[t_col] >= t_plot[0]) & (df[t_col] <= t_plot[1]) ]
+    plot = df[(df[t_col] >= t0) & (df[t_col] <= t1) ]
     plt.plot(plot[t_col], plot[p_col])
     
     # Get actual min and max from your data
@@ -138,25 +188,8 @@ if uploaded_file is not None:
     
     if ent == True:
         # Example for creating banded background every 12 hours
-        start_time = xtick_start
-        end_time = (start_time + 24 * ent_days) 
-        
-        # If Time is datetime, convert to numeric hours for easier spacing
-        if np.issubdtype(plot['Time'].dtype, np.datetime64):
-            time_unit = 'datetime'
-            total_seconds = (end_time - start_time).total_seconds()
-            num_bands = int(total_seconds // (12 * 3600)) 
-            delta = pd.Timedelta(hours=12)
-        else:
-            time_unit = 'numeric'
-            num_bands = int((end_time - start_time) // 12) 
-            delta = 12
-            
-        for i in range(num_bands):
-            band_start = start_time + i * delta
-            band_end = band_start + delta
-            if i % 2 == 0:  # Every other band
-                plt.axvspan(band_start, band_end, color='lightblue', alpha=0.5)
+
+        fig = methods.plot_entrainment(fig, plot, xtick_start, xtick_end, ent_days, T=T, color=ent_color)
     
     # Generate ticks at every 24 units
     xticks = np.arange(xtick_start, xtick_end + 1, 24)
@@ -177,39 +210,70 @@ if uploaded_file is not None:
                     help='Here you can download your data',
                     use_container_width=True,)
     
-    pdf_buffer = methods.generate_pdf_report(df, t_col, data_cols, ent, ent_days, unit)
-    st.sidebar.download_button(
-            label="📄 Download report",
-            data=pdf_buffer,
-            file_name="rhythmicity_report.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
+    report_spot = st.sidebar.empty()
+    report_button = report_spot.button(
+                    label="📄 Prepare report",
+                    use_container_width=True
+                )
+    
+    if report_button:
+        
+        with st.spinner("Running R script..."):
+            
+            pdf_buffer = methods.generate_pdf_report(df, t_col, data_cols, ent, ent_days, unit, bg_color, ent_color)
+            report_spot.download_button(
+                    label="↓ Download report",
+                    data=pdf_buffer,
+                    file_name="rhythmicity_report.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
     
     if analysis_button:
         
         with st.spinner("Running R script..."):
 
             # Transpose and set index
-            rdf = df.transpose()
+            rdf = df[(df[t_col] >= t_start_test) & (df[t_col] <= t_end_test)].set_index(t_col).transpose().reset_index()
             
-            messages.warning("""
-            Hi,
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode='w') as temp_file:
+                rdf.to_csv(temp_file.name, sep="\t", index=False)
+                input_path = temp_file.name
+                
+            output_dir = tempfile.mkdtemp()
+
+            result = subprocess.run(
+                ["Rscript", "run_meta2d.R", input_path, output_dir],
+                capture_output=True,
+                text=True
+            )
             
-            I am still working on the implementation of this feature. In the meantime, you can download the formated data to run it in Metacycle.
+            st.text("STDOUT:\n" + result.stdout)
+            st.text("STDERR:\n" + result.stderr)
             
-            Best,
-            
-            Borja""")
-            csv = convert_for_download(rdf)
-            
-            messages2.download_button(label="Download data for Metacycle testing",
-                            data=csv,
-                            file_name='data_for_metacycle.txt',
-                            mime='text/csv',
-                            type='primary',
-                            help='Here you can download your data',
-                            use_container_width=True,)
+            if result.returncode != 0:
+                messages.error("R script failed.")
+                csv = convert_for_download(rdf)
+                
+                messages2.download_button(label="Download data for Metacycle testing",
+                                data=csv,
+                                file_name='data_for_metacycle.txt',
+                                mime='text/csv',
+                                type='primary',
+                                help='Here you can download your data',
+                                use_container_width=True,)
+            else:
+                result_df = pd.read_csv(os.path.join(output_dir, "meta2d_result.csv"))
+                messages.dataframe(result_df)
+                csv = convert_for_download(result_df)
+                
+                messages2.download_button(label="Download MetaCycle results",
+                                data=csv,
+                                file_name='meta2d_results.txt',
+                                mime='text/csv',
+                                type='primary',
+                                help='Here you can download your data',
+                                use_container_width=True,)
             
                 #st.dataframe(result_df)
                 
