@@ -11,6 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import streamlit as st
 from methods import methods
+from io import BytesIO
 
 from PIL import Image
 import subprocess
@@ -24,7 +25,7 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = 0.1
+version = 0.2
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
@@ -141,8 +142,12 @@ if uploaded_file is not None:
         #band_color = parts.remove(freerun_type)
         band_type = [i for i in parts if i != freerun_type][0]
         ent_color = backgroud[band_type]
+        
+        order = parts.index(band_type)
         #st.write(ent_color)
     else:
+        T = 0
+        order = 0
         ent_days = 0
     
     norm_meth = c1.selectbox('Normalization', ['None', 'Z-Score', 'Min-Max'])
@@ -159,7 +164,17 @@ if uploaded_file is not None:
     st.write(f"Experiment with data for {duration} hours")
     
     preview = st.empty()
-    p_col = st.selectbox('Column to preview', data_cols)
+    
+    conditions = []
+    if layout_file is not None:
+        
+        conditions = list(layout_df.Condition.unique())
+        p_data_cols = data_cols + conditions
+        
+    else:
+        p_data_cols = data_cols
+    
+    p_col = st.selectbox('Column to preview', p_data_cols)
     unit = st.text_input('Data unit', 'Measured unit')
     
     c1, c2 = st.columns(2)
@@ -171,32 +186,30 @@ if uploaded_file is not None:
     short = df[[t_col] + data_cols[:5]].iloc[:5]
     preview.table(short)
 
-    fig = plt.figure(figsize=(10, 4))
-    ax = plt.axes()
-    ax.set_facecolor(bg_color)
+    if p_col in conditions:
+        
+        fig = methods.grouped_plot(df, t_col, p_col, t0, t1, group=p_col, layout=layout_df, bg_color=bg_color, ent=ent, 
+                 ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
+        
+    else:
+        fig = methods.plot(df, t_col, p_col, t0, t1, bg_color=bg_color, ent=ent, 
+                 ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
     
-    plot = df[(df[t_col] >= t0) & (df[t_col] <= t1) ]
-    plt.plot(plot[t_col], plot[p_col])
-    
-    # Get actual min and max from your data
-    xmin = plot[t_col].min()
-    xmax = plot[t_col].max()
-    
-    # Calculate start and end of xticks, rounded to nearest multiples of 24
-    xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-    xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-    
-    if ent == True:
-        # Example for creating banded background every 12 hours
-
-        fig = methods.plot_entrainment(fig, plot, xtick_start, xtick_end, ent_days, T=T, color=ent_color)
-    
-    # Generate ticks at every 24 units
-    xticks = np.arange(xtick_start, xtick_end + 1, 24)
-    plt.xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
-    plt.xlabel('Time (h)')
-    plt.ylabel(unit)
     pre_plot.pyplot(fig)
+    
+    # Convert to BytesIO for download
+    buf = BytesIO()
+    fig.savefig(buf, format="png")
+    buf.seek(0)
+    
+    # Add download button
+    st.download_button(
+        label="Download Plot as PNG",
+        data=buf,
+        file_name="my_plot.png",
+        mime="image/png",
+        use_container_width=True,
+    )
     
     csv = convert_for_download(df)
     
@@ -218,20 +231,23 @@ if uploaded_file is not None:
     
     if report_button:
         
-        with st.spinner("Running R script..."):
-            
-            pdf_buffer = methods.generate_pdf_report(df, t_col, data_cols, ent, ent_days, unit, bg_color, ent_color)
-            report_spot.download_button(
-                    label="↓ Download report",
-                    data=pdf_buffer,
-                    file_name="rhythmicity_report.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
+        with st.spinner("Preparing report..."):
+                st.toast('Preparing report...!')
+                pdf_buffer = methods.generate_pdf_report(df, t_col, data_cols, ent, ent_days, unit,
+                                                         bg_color, ent_color, order=order, T=T)
+                st.toast('Report ready to download!', icon='🎉')
+                report_spot.download_button(
+                        label="↓ Download report",
+                        data=pdf_buffer,
+                        file_name="rhythmicity_report.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
     
     if analysis_button:
         
         with st.spinner("Running R script..."):
+            st.toast('Running MetaCycle...!')
 
             # Transpose and set index
             rdf = df[(df[t_col] >= t_start_test) & (df[t_col] <= t_end_test)].set_index(t_col).transpose().reset_index()
@@ -249,7 +265,7 @@ if uploaded_file is not None:
             )
             
             st.text("STDOUT:\n" + result.stdout)
-            st.text("STDERR:\n" + result.stderr)
+            #mest.text("STDERR:\n" + result.stderr)
             
             if result.returncode != 0:
                 messages.error("R script failed.")
@@ -263,6 +279,8 @@ if uploaded_file is not None:
                                 help='Here you can download your data',
                                 use_container_width=True,)
             else:
+                st.toast('Report ready to download!', icon='🎉')
+
                 result_df = pd.read_csv(os.path.join(output_dir, "meta2d_result.csv"))
                 messages.dataframe(result_df)
                 csv = convert_for_download(result_df)

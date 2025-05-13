@@ -126,7 +126,8 @@ class methods:
                    'Z-Score': methods.z_score(df, data_cols)}
             return meth[method]
         
-    def generate_pdf_report(df, t_col, data_cols, ent=False, ent_days = 0, unit='Measured unit', bg_color='white', band_color='lightblue'):
+    def generate_pdf_report(df, t_col, data_cols, ent=False, ent_days = 0, unit='Measured unit', bg_color='white', band_color='lightblue',
+                            order=0, T=24, color='#EBEBEB'):
         buffer = BytesIO()
             
         with PdfPages(buffer) as pdf:
@@ -144,8 +145,8 @@ class methods:
                     fig, ax = plt.subplots(1, 2, figsize=(15, 5))
                     for i in range(2):
                         ax[i].set_facecolor(bg_color)
-                    ent_data = df[df[t_col] <= ent_days * 24]
-                    fr_data = df[df[t_col] >= ent_days * 24]
+                    ent_data = df[df[t_col] <= ent_days * T]
+                    fr_data = df[df[t_col] >= ent_days * T]
                     ax[0].plot(ent_data[t_col], ent_data[col])
                     ax[0].set_title(f"Entrainment")
                     
@@ -160,7 +161,7 @@ class methods:
                     if ent == True:
                         # Example for creating banded background every 12 hours
                         start_time = xtick_start
-                        end_time = (start_time + 24 * ent_days) 
+                        end_time = (start_time + T * ent_days) 
                         
                         # If Time is datetime, convert to numeric hours for easier spacing
                         if np.issubdtype(ent_data[t_col].dtype, np.datetime64):
@@ -170,14 +171,14 @@ class methods:
                             delta = pd.Timedelta(hours=12)
                         else:
                             time_unit = 'numeric'
-                            num_bands = int((end_time - start_time) // 12) 
-                            delta = 12
+                            num_bands = int((end_time - start_time) // (T/2)) 
+                            delta = (T/2)
                             
                         for i in range(num_bands):
-                            band_start = start_time + i * delta
-                            band_end = band_start + delta
+                            band_start = start_time + i * delta + T/2 * order
+                            band_end = band_start + delta 
                             if i % 2 == 0:  # Every other band
-                                ax[0].axvspan(band_start, band_end, color=band_color, alpha=0.8)
+                                ax[0].axvspan(band_start, band_end, color=band_color, alpha=1)
                                 
                     xticks = np.arange(xtick_start, xtick_end + 1, 24)
                     ax[0].set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
@@ -214,7 +215,7 @@ class methods:
         buffer.seek(0)
         return buffer
         
-    def figure_w_entrainment(df, t_col, data_col, t_plot, p_col, ent, ent_days, unit):
+    def figure_w_entrainment(df, t_col, data_col, t_plot, p_col, ent, ent_days, unit, order=0, T=24, color='#EBEBEB'):
         fig = plt.figure(figsize=(10, 4))
         
         plot = df[(df[t_col] >= t_plot[0]) & (df[t_col] <= t_plot[1]) ]
@@ -229,26 +230,29 @@ class methods:
         xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
         
         if ent == True:
+            
+            fig = methods.plot_entrainment(fig, plot, t_col, xtick_start, xtick_end,
+                                           ent_days, order=order, T=T, color=color)
             # Example for creating banded background every 12 hours
-            start_time = xtick_start
-            end_time = (start_time + 24 * ent_days) 
+           # start_time = xtick_start
+           # end_time = (start_time + T * ent_days) 
             
             # If Time is datetime, convert to numeric hours for easier spacing
-            if np.issubdtype(plot['Time'].dtype, np.datetime64):
-                time_unit = 'datetime'
-                total_seconds = (end_time - start_time).total_seconds()
-                num_bands = int(total_seconds // (12 * 3600)) 
-                delta = pd.Timedelta(hours=12)
-            else:
-                time_unit = 'numeric'
-                num_bands = int((end_time - start_time) // 12) 
-                delta = 12
+           # if np.issubdtype(plot[t_col].dtype, np.datetime64):
+           #     time_unit = 'datetime'
+           #     total_seconds = (end_time - start_time).total_seconds()
+           #     num_bands = int(total_seconds // (12 * 3600)) 
+           #     delta = pd.Timedelta(hours=12)
+           # else:
+           #     time_unit = 'numeric'
+           #     num_bands = int((end_time - start_time) // (T/2)) 
+           #     delta = (T/2)
                 
-            for i in range(num_bands):
-                band_start = start_time + i * delta
-                band_end = band_start + delta
-                if i % 2 == 0:  # Every other band
-                    plt.axvspan(band_start, band_end, color='lightblue', alpha=0.5)
+           # for i in range(num_bands):
+           #     band_start = start_time + i * delta + T/2 * order
+           #     band_end = band_start + delta 
+           #     if i % 2 == 0:  # Every other band
+           #         plt.axvspan(band_start, band_end, color=color, alpha=1)
         
         # Generate ticks at every 24 units
         xticks = np.arange(xtick_start, xtick_end + 1, 24)
@@ -257,13 +261,13 @@ class methods:
         plt.ylabel(unit)
         return fig
     
-    def plot_entrainment(fig, plot, xtick_start, xtick_end, ent_days, T=24, color='#EBEBEB'):
+    def plot_entrainment(fig, plot, t_col, xtick_start, xtick_end, ent_days, order=0, T=24, color='#EBEBEB'):
         
             start_time = xtick_start
             end_time = (start_time + T * ent_days) 
             
             # If Time is datetime, convert to numeric hours for easier spacing
-            if np.issubdtype(plot['Time'].dtype, np.datetime64):
+            if np.issubdtype(plot[t_col].dtype, np.datetime64):
                 time_unit = 'datetime'
                 total_seconds = (end_time - start_time).total_seconds()
                 num_bands = int(total_seconds // (12 * 3600)) 
@@ -274,11 +278,79 @@ class methods:
                 delta = (T/2)
                 
             for i in range(num_bands):
-                band_start = start_time + i * delta
-                band_end = band_start + delta
+                band_start = start_time + i * delta + T/2 * order
+                band_end = band_start + delta 
                 if i % 2 == 0:  # Every other band
                     plt.axvspan(band_start, band_end, color=color, alpha=1)
             return fig
+        
+    def plot(df, t_col, p_col, t0, t1, bg_color='white', ent=False, ent_days=0, 
+             order=0, T=24, color='white', unit='Measured unit'):
+        
+        fig, ax = plt.subplots(1, figsize=(10, 4))
+        ax.set_facecolor(bg_color)
+        
+        plot = df[(df[t_col] >= t0) & (df[t_col] <= t1) ]
+        plt.plot(plot[t_col], plot[p_col])
+        
+        # Get actual min and max from your data
+        xmin = plot[t_col].min()
+        xmax = plot[t_col].max()
+        
+        # Calculate start and end of xticks, rounded to nearest multiples of 24
+        xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
+        xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
+        
+        if ent == True:
+            # Example for creating banded background every 12 hours
+    
+            fig = methods.plot_entrainment(fig, plot, t_col, xtick_start, xtick_end, ent_days, order=order, T=T, color=color)
+        
+        # Generate ticks at every 24 units
+        xticks = np.arange(xtick_start, xtick_end + 1, 24)
+        plt.xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
+        plt.xlabel('Time (h)')
+        plt.ylabel(unit)
+        return fig
+    
+    def grouped_plot(df, t_col, p_col, t0, t1, group, layout,  bg_color='white', ent=False, ent_days=0, 
+             order=0, T=24, color='white', unit='Measured unit'):
+        
+        
+        cols = layout[layout.Condition == group]['name'].to_list()     
+        
+        fig, ax = plt.subplots(1, figsize=(10, 4))
+        ax.set_facecolor(bg_color)
+        
+        plot = df[(df[t_col] >= t0) & (df[t_col] <= t1) ]
+                
+        mu1 = plot[cols].mean(axis=1)
+        sigma1 = plot[cols].std(axis=1)
+
+        #ax.plot(t, mu1, lw=2, label='mean population 1', color='blue')
+        ax.plot(plot[t_col], mu1, lw=2, )
+        ax.fill_between(plot[t_col], mu1+sigma1, mu1-sigma1, facecolor='grey', alpha=0.3, zorder=10)
+        
+        # Get actual min and max from your data
+        xmin = plot[t_col].min()
+        xmax = plot[t_col].max()
+        
+        # Calculate start and end of xticks, rounded to nearest multiples of 24
+        xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
+        xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
+        
+        if ent == True:
+            # Example for creating banded background every 12 hours
+    
+            fig = methods.plot_entrainment(fig, plot, t_col, xtick_start, xtick_end, ent_days, order=order, T=T, color=color)
+        
+        # Generate ticks at every 24 units
+        xticks = np.arange(xtick_start, xtick_end + 1, 24)
+        plt.xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
+        plt.xlabel('Time (h)')
+        plt.ylabel(unit)
+        plt.title(group, fontsize=15)
+        return fig
     #def normalization(df, cols, method):
         
     #    for col in ps.columns:
