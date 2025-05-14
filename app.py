@@ -25,7 +25,7 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = 0.2.1
+version = "0.2.1"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
