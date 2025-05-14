@@ -1,20 +1,24 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-WORKDIR /app
-
+# Install R and dependencies
 RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    software-properties-common \
-    git \
+    r-base \
+    libcurl4-openssl-dev \
+    libssl-dev \
+    libxml2-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone https://github.com/borfebor/chronotopia .
+# Install R packages (MetaCycle needs BiocManager and dependencies)
+RUN R -e "install.packages('BiocManager', repos='http://cran.us.r-project.org')" \
+ && R -e "BiocManager::install('MetaCycle', ask = FALSE, update = FALSE)"
 
-RUN pip3 install -r requirements.txt
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-EXPOSE 8501
+# Copy app files
+COPY . /app
+WORKDIR /app
 
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health
-
-ENTRYPOINT ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Set Streamlit to run
+CMD ["streamlit", "run", "app.py"]
