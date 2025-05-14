@@ -25,7 +25,7 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = 0.2
+version = 0.2.1
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
@@ -70,7 +70,7 @@ if uploaded_file is not None:
     t_col = st.sidebar.selectbox('Time column', [col for col in df.columns] )
     t_unit = st.sidebar.selectbox('Time unit', ['Minutes', 'Hours', 'Days', 'Seconds'])
     data_cols = [col for col in df.columns if col != t_col]
-    
+    layout_file = None
     if layout == True:
 
         st.sidebar.header('Experimental groups')
@@ -90,6 +90,7 @@ if uploaded_file is not None:
                                 type=['csv','txt','xlsx', 'tsv'])
         
         if layout_file is not None:
+            
             layout_df = methods.importer(layout_file)
             
             layout_df['name'] = layout_df.Condition + " - [" + layout_df.Sample + "]"
