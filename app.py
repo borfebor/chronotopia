@@ -9,6 +9,7 @@ Created on Mon May  5 10:55:41 2025
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 import streamlit as st
 from methods import methods
 from io import BytesIO
@@ -25,7 +26,7 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = "0.3"
+version = "0.3.1"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
@@ -112,17 +113,22 @@ if uploaded_file is not None:
     hourly = st.sidebar.toggle('Smoothen the data hourly', False)
     ent = st.sidebar.toggle('Include entrainment data', False)
     exclusion = st.sidebar.toggle('Select samples to exclude', False)
-    test_a_bit = st.sidebar.toggle('Select a timeframe for testing', False)
+    test_a_bit = st.sidebar.toggle('Rhythmicity analysis parameters', False)
     
     if exclusion:
         exclusion_list = st.multiselect("Select samples to exclude", data_cols)
         df = df.drop(columns=exclusion_list)
         data_cols =  [col for col in df.columns if col != t_col]
     
+    method = 'meta2d'
+    thresh = 0.05
     if test_a_bit:
         t1, t2 = st.sidebar.columns(2)
         t_start_test = t1.number_input('Minimum time', int(df[t_col].min()), int(df[t_col].max()), int(df[t_col].min()),  step=1)    
         t_end_test = t2.number_input('Last time', int(df[df[t_col] > t_start_test][t_col].min()), int(df[df[t_col] > t_start_test][t_col].max()), int(df[df[t_col] > t_start_test][t_col].max()), step=1) 
+        method = t1.selectbox('Preferred testing method', ['meta2d', 'JTK', 'ARS', 'LS', ], 0)   
+        thresh = t2.selectbox('Significance threshold', [0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001], 0)   
+        
     else:
         t_start_test, t_end_test = df[t_col].min(), df[t_col].max()  
         
@@ -309,6 +315,15 @@ if uploaded_file is not None:
                 st.toast('Report ready to download!', icon='🎉')
 
                 result_df = pd.read_csv(os.path.join(output_dir, "meta2d_result.csv"))
+                col_sorter = [i for i in result_df.columns if 'meta.' in i]
+                result_df = result_df[col_sorter]
+                result_df.columns = [i.replace('meta.', '') for i in result_df.columns]
+                
+                cols = [col for col in result_df.columns if method in col]
+                per_col = [col for col in cols if 'PERIOD' in col.upper()][0]
+                q_col = [col for col in cols if 'BH.Q' in col.upper()][0]  
+                
+                result_df['reject'] = np.where(result_df[q_col] <= thresh, True, False)
                 messages.dataframe(result_df)
                 st.session_state["result_df"] = result_df  # Save in session state
 
@@ -324,9 +339,7 @@ if uploaded_file is not None:
                             
     if "result_df" in st.session_state:
         result_df = st.session_state["result_df"]
-        
-        col_sorter = [i for i in result_df.columns if 'meta.' in i]
-    
+            
     if report_button:
         
         with st.spinner("Preparing report..."):
@@ -336,6 +349,43 @@ if uploaded_file is not None:
                 
                 if conditions != []:
                     
+                    #for group in conditions:
+                        
+                    if "result_df" in globals():
+                        if "layout_df" in globals():
+                            
+                            res = result_df.set_index('CycID')
+                            trans = layout_df.set_index('name')
+                            mix = pd.concat([res, trans], axis=1)
+                            
+                            cols = [col for col in mix.columns if method in col]
+
+                            per_col = [col for col in cols if 'PERIOD' in col.upper()][0]
+                            
+                            fig, (ax1, ax2) = plt.subplots(1,2, figsize=(15, 7), layout='tight')
+                            
+                            sns.boxplot(mix, x='Condition', y=per_col, hue='Condition', ax=ax1)
+                            sns.swarmplot(mix, x='Condition', y=per_col, hue='Condition',
+                                          legend=False, edgecolor='k', size=8, linewidth=1, ax=ax1)
+                            
+                            ax1.tick_params(axis='x', rotation=90)
+                            ax1.set_ylabel('Period (h)')
+                            ax1.set_title('Tested periodicity (all samples)')
+                                                                                    
+                            mix2 = mix[mix.reject == True]
+                                                        
+                            sns.boxplot(mix2, x='Condition', y=per_col, hue='Condition', ax=ax2)
+                            sns.swarmplot(mix2, x='Condition', y=per_col, hue='Condition', 
+                                          legend=False, edgecolor='k', size=8,  linewidth=1, ax=ax2)
+                            
+                            ax2.tick_params(axis='x', rotation=90)
+                            ax2.set_ylabel('Period (h)')
+                            ax2.set_title('Tested periodicity (only rhythmic samples)')
+                            
+                            st.pyplot(fig)
+                            
+                            figures.append(fig)
+                                                
                     for group in conditions:
                         
                         if "result_df" in globals():
@@ -345,8 +395,12 @@ if uploaded_file is not None:
                                  ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
                             
                             sorter = layout_df[layout_df.Condition == group]['name'].unique()
-                            sorted_result = result_df[result_df['meta.CycID'].isin(sorter)]
-                            methods.text(ax[0], sorted_result[col_sorter], group=group)
+
+                            sorted_result = result_df[result_df['CycID'].isin(sorter)]
+                            if sorted_result.shape[0] == 0:
+                                st.error('Oops, it might be that the IDs from the groups and the analysis do not match. Just re-run the analysis making sure that the layout have the correct names.')
+                                st.stop()
+                            methods.text(ax[0], sorted_result, method=method, group=group, thresh=thresh)
                             figures.append(fig)
 
                         else:
@@ -360,16 +414,15 @@ if uploaded_file is not None:
                     for col in data_cols:
                         
                         if "result_df" in globals():
-                            method = 'meta2d'
-                            focus = result_df[result_df['meta.CycID'] == col]
+                            focus = result_df[result_df['CycID'] == col]
                             cols = [col for col in focus.columns if method in col]
 
                             per_col = [col for col in cols if 'PERIOD' in col.upper()][0]
                             q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
                             q = np.round(focus[q_col].mean(), 5)
-                            reject = q <= 0.05
+                            reject = q <= thresh
                             period = f"{np.round(focus[per_col].mean(),1)}"
-                            title = f"{col}. Period: {period} h. q-value: {q}. Reject: {reject}"
+                            title = f"{col}.\nPeriod: {period} h. q-value: {q} ({method} tested).\nReject: {reject} (Sig. thresh = {thresh})"
                         else:
                             title=None
 
@@ -381,16 +434,15 @@ if uploaded_file is not None:
                 else:
                     for col in data_cols:
                         if "result_df" in globals():
-                            method = 'meta2d'
-                            focus = result_df[result_df['meta.CycID'] == col]
+                            focus = result_df[result_df['CycID'] == col]
                             cols = [col for col in focus.columns if method in col]
 
                             per_col = [col for col in cols if 'PERIOD' in col.upper()][0]
                             q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
                             q = np.round(focus[q_col].mean(), 5)
-                            reject = q <= 0.05
+                            reject = q <= thresh
                             period = f"{np.round(focus[per_col].mean(),1)}"
-                            title = f"{col}. Period: {period} h. q-value: {q}. Reject: {reject}"
+                            title = f"{col}.\nPeriod: {period} h. q-value: {q} ({method} tested).\nReject: {reject} (Sig. thresh = {thresh})"
                         else:
                             title=None
                             

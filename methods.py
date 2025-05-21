@@ -126,109 +126,6 @@ class methods:
                    'Z-Score': methods.z_score(df, data_cols)}
             return meth[method]
         
-    def generate_pdf_report(df, t_col, data_cols, 
-                            ent=False, ent_days = 0, unit='Measured unit', 
-                            bg_color='white', band_color='lightblue',
-                            order=0, T=24):
-        buffer = BytesIO()
-            
-        with PdfPages(buffer) as pdf:
-            if ent == False:
-                for col in data_cols:  # Replace with your loop over data
-                    fig, ax = plt.subplots(1, figsize=(10, 5))
-                    ax.set_facecolor(bg_color)
-                    ax.plot(df[t_col], df[col])
-                    ax.set_title(col)
-                    
-                    xmin = df[t_col].min()
-                    xmax = df[t_col].max()
-                    
-                    # Calculate start and end of xticks, rounded to nearest multiples of 24
-                    xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-                    xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-                    
-                    ax.set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
-                    ax.set_xlabel('Time (h)')
-                    ax.set_ylabel(unit)
-
-                    pdf.savefig(fig)
-                    plt.close(fig)
-            else: 
-                
-                for col in data_cols:  # Replace with your loop over data
-                    fig, ax = plt.subplots(1, 2, figsize=(15, 5))
-                    for i in range(2):
-                        ax[i].set_facecolor(bg_color)
-                    ent_data = df[df[t_col] <= ent_days * T]
-                    fr_data = df[df[t_col] >= ent_days * T]
-                    ax[0].plot(ent_data[t_col], ent_data[col])
-                    ax[0].set_title(f"Entrainment")
-                    
-                    # Get actual min and max from your data
-                    xmin = ent_data[t_col].min()
-                    xmax = ent_data[t_col].max()
-                    
-                    # Calculate start and end of xticks, rounded to nearest multiples of 24
-                    xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-                    xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-                    
-                    if ent == True:
-                        # Example for creating banded background every 12 hours
-                        start_time = xtick_start
-                        end_time = (start_time + T * ent_days) 
-                        
-                        # If Time is datetime, convert to numeric hours for easier spacing
-                        if np.issubdtype(ent_data[t_col].dtype, np.datetime64):
-                            time_unit = 'datetime'
-                            total_seconds = (end_time - start_time).total_seconds()
-                            num_bands = int(total_seconds // (12 * 3600)) 
-                            delta = pd.Timedelta(hours=12)
-                        else:
-                            time_unit = 'numeric'
-                            num_bands = int((end_time - start_time) // (T/2)) 
-                            delta = (T/2)
-                            
-                        for i in range(num_bands):
-                            band_start = start_time + i * delta + T/2 * order
-                            band_end = band_start + delta 
-                            if i % 2 == 0:  # Every other band
-                                ax[0].axvspan(band_start, band_end, color=band_color, alpha=1)
-                                
-                    xticks = np.arange(xtick_start, xtick_end + 1, 24)
-                    ax[0].set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
-                    ax[0].set_xlabel('Time (h)')
-                    ax[0].set_ylabel(unit)
-                    
-                    # Get actual min and max from your data
-                    xmin = fr_data[t_col].min()
-                    xmax = fr_data[t_col].max()
-                    
-                    # Calculate start and end of xticks, rounded to nearest multiples of 24
-                    xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-                    xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-                    
-                    ax[1].plot(fr_data[t_col], fr_data[col])
-                    ax[1].set_title(f"Free Running")
-                    ax[1].set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
-                    ax[1].set_xlabel('Time (h)')
-                    ax[1].set_ylabel(unit)
-                    plt.suptitle(col)
-                    
-                    pdf.savefig(fig)
-                    plt.close(fig)
-                    
-                # Add metadata (optional)
-                d = pdf.infodict()
-                d['Title'] = 'Rhythmicity Report'
-                d['Author'] = 'Your Name'
-                # Add metadata (optional)
-                d = pdf.infodict()
-                d['Title'] = 'Rhythmicity Report'
-                d['Author'] = 'Your Name'
-    
-        buffer.seek(0)
-        return buffer
-    
     
     def grouped_report(buffer, df, t_col, t0, t1, conditions, layout,
                                       bg_color='white', ent=False, ent_days=0,
@@ -459,7 +356,7 @@ class methods:
                     unit='Measured unit', 
                     bg_color='white', title=None):
                     
-            fig, ax = plt.subplots(1, figsize=(10, 5))
+            fig, ax = plt.subplots(1, figsize=(12, 7))
             ax.set_facecolor(bg_color)
             ax.plot(df[t_col], df[col])
             if title == None:
@@ -485,7 +382,7 @@ class methods:
                             bg_color='white', band_color='lightblue',
                             order=0, T=24, title=None):
         
-            fig, ax = plt.subplots(1, 2, figsize=(15, 5))
+            fig, ax = plt.subplots(1, 2, figsize=(20, 7))
             for i in range(2):
                 ax[i].set_facecolor(bg_color)
             ent_data = df[df[t_col] <= ent_days * T]
@@ -578,7 +475,7 @@ class methods:
         ax.set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
         ax.set_xlabel('Time (h)')
         ax.set_ylabel(unit)
-        ax.set_title(f"{group} (N={len(cols)})", fontsize=15)
+        ax.set_title(f"{group} (N={len(cols)})", fontsize=15, loc='left')
         return ax
     
     def plot_table_on_ax(ax, df):
@@ -588,7 +485,7 @@ class methods:
         table.set_fontsize(10)
         table.scale(1, 1.5)
         
-    def text(ax, df, method='meta2d', group=''):
+    def text(ax, df, method='meta2d', group='', thresh=0.05):
         
         group = group.replace('_', '-')
         cols = [col for col in df.columns if method in col]
@@ -596,7 +493,7 @@ class methods:
         q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
         
         period = f"{np.round(df[per_col].mean(),1)} ± {np.round(df[per_col].std(),1)}"
-        significant = df[df[q_col] <= 0.05]
+        significant = df[df[q_col] <= thresh]
         
         replicates = df.shape[0]
         sig_replicates = significant.shape[0]
@@ -607,7 +504,7 @@ class methods:
     f"$\\bf{{{group} \\,  summary:}}$\n\n"
     f"$\\bf{{N}}$: {df.shape[0]} replicates\n"
     f"$\\bf{{Rhythmic\\ replicates}}$: {sig_replicates}/{replicates} ({percent}%)\n"
-    f"$\\bf{{Method}}$: {method}\n"
+    f"$\\bf{{Method}}$: {method} - Significance threshold = {thresh}\n"
     f"$\\bf{{Detected\\ period}}$: {period} h"
 )
 
