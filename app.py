@@ -25,7 +25,7 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = "0.2.1"
+version = "0.3"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
@@ -66,10 +66,15 @@ if uploaded_file is not None:
         df = methods.importer(uploaded_file)
         
     layout = st.sidebar.toggle('Include experimental layout', False)
+    
+    df.columns = [col.strip() for col in df.columns]
 
     t_col = st.sidebar.selectbox('Time column', [col for col in df.columns] )
     t_unit = st.sidebar.selectbox('Time unit', ['Minutes', 'Hours', 'Days', 'Seconds'])
+    
     data_cols = [col for col in df.columns if col != t_col]
+    #df.columns = t_col + data_cols
+    
     layout_file = None
     if layout == True:
 
@@ -106,7 +111,13 @@ if uploaded_file is not None:
     
     hourly = st.sidebar.toggle('Smoothen the data hourly', False)
     ent = st.sidebar.toggle('Include entrainment data', False)
+    exclusion = st.sidebar.toggle('Select samples to exclude', False)
     test_a_bit = st.sidebar.toggle('Select a timeframe for testing', False)
+    
+    if exclusion:
+        exclusion_list = st.multiselect("Select samples to exclude", data_cols)
+        df = df.drop(columns=exclusion_list)
+        data_cols =  [col for col in df.columns if col != t_col]
     
     if test_a_bit:
         t1, t2 = st.sidebar.columns(2)
@@ -167,36 +178,66 @@ if uploaded_file is not None:
     preview = st.empty()
     
     conditions = []
+    visu = ['Lineplot', 'Actogram']
+
     if layout_file is not None:
         
         conditions = list(layout_df.Condition.unique())
-        p_data_cols = data_cols + conditions
+        #p_data_cols = data_cols + conditions
         
-    else:
-        p_data_cols = data_cols
+        visu = visu + ['Lineplot [Mean ± SD]', 'Lineplot [Mean + Replicates]']
+        
+    #else:
+     #   p_data_cols = data_cols
     
-    p_col = st.selectbox('Column to preview', p_data_cols)
-    unit = st.text_input('Data unit', 'Measured unit')
-    
-    c1, c2 = st.columns(2)
+    c, c1, c2 = st.columns([2, 1, 1])
     t0 = c1.number_input('Starting time to plot', int(df[t_col].min()), int(df[t_col].max()), int(df[t_col].min()),  step=1)    
     t1 = c2.number_input('End time to plot', int(df[df[t_col] > t0][t_col].min()), int(df[df[t_col] > t0][t_col].max()), int(df[df[t_col] > t0][t_col].max()), step=1) 
-    #t_plot = st.slider('Time period to plot', df[t_col].min(), df[t_col].max(), (df[t_col].min(), df[t_col].max()))
+    
+    plot_type = c.selectbox("Type of plot to visualize", visu)
 
-    pre_plot = st.empty()
     short = df[[t_col] + data_cols[:5]].iloc[:5]
     preview.table(short)
-
-    if p_col in conditions:
         
-        fig = methods.grouped_plot(df, t_col, p_col, t0, t1, group=p_col, layout=layout_df, bg_color=bg_color, ent=ent, 
-                 ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
+    if plot_type == 'Lineplot':
         
-    else:
+        p_col = st.selectbox('Column to preview', data_cols)
+        unit = st.text_input('Data unit', 'Measured unit')
+        pre_plot = st.empty()
         fig = methods.plot(df, t_col, p_col, t0, t1, bg_color=bg_color, ent=ent, 
+                     ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
+        
+        pre_plot.pyplot(fig)
+            
+    elif plot_type == 'Lineplot [Mean ± SD]':
+            
+        p_col = st.selectbox('Column to preview', conditions)
+        unit = st.text_input('Data unit', 'Measured unit')
+        pre_plot = st.empty()
+        
+        fig = methods.grouped_plot(df, t_col, t0, t1, group=p_col, layout=layout_df, bg_color=bg_color, ent=ent, 
                  ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
-    
-    pre_plot.pyplot(fig)
+        pre_plot.pyplot(fig)
+        
+    elif plot_type == 'Lineplot [Mean + Replicates]':
+            
+        p_col = st.selectbox('Column to preview', conditions)
+        unit = st.text_input('Data unit', 'Measured unit')
+        pre_plot = st.empty()
+        
+        fig = methods.grouped_plot_traces(df, t_col, t0, t1, group=p_col, layout=layout_df, bg_color=bg_color, ent=ent, 
+                 ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
+        pre_plot.pyplot(fig)
+
+        
+    elif plot_type == 'Actogram':
+        p_col = st.selectbox('Column to preview', data_cols)
+        times = st.number_input("Plot N times", 1, int(np.round(df[t_col].max() / 24)), 1)
+        pre_plot = st.empty()
+        fig = methods.double_plot(df, t_col, p_col, ent_days, T, order, t0=t0, t1=t1, times=times, 
+                                  bg_color=bg_color, band_color=ent_color)
+        
+        pre_plot.pyplot(fig)
     
     # Convert to BytesIO for download
     buf = BytesIO()
@@ -226,25 +267,10 @@ if uploaded_file is not None:
     
     report_spot = st.sidebar.empty()
     report_button = report_spot.button(
-                    label="📄 Prepare report",
-                    use_container_width=True
-                )
-    
-    if report_button:
-        
-        with st.spinner("Preparing report..."):
-                st.toast('Preparing report...!')
-                pdf_buffer = methods.generate_pdf_report(df, t_col, data_cols, ent, ent_days, unit,
-                                                         bg_color, ent_color, order=order, T=T)
-                st.toast('Report ready to download!', icon='🎉')
-                report_spot.download_button(
-                        label="↓ Download report",
-                        data=pdf_buffer,
-                        file_name="rhythmicity_report.pdf",
-                        mime="application/pdf",
+                        label="📄 Prepare report",
                         use_container_width=True
                     )
-    
+
     if analysis_button:
         
         with st.spinner("Running R script..."):
@@ -284,6 +310,8 @@ if uploaded_file is not None:
 
                 result_df = pd.read_csv(os.path.join(output_dir, "meta2d_result.csv"))
                 messages.dataframe(result_df)
+                st.session_state["result_df"] = result_df  # Save in session state
+
                 csv = convert_for_download(result_df)
                 
                 messages2.download_button(label="Download MetaCycle results",
@@ -293,9 +321,91 @@ if uploaded_file is not None:
                                 type='primary',
                                 help='Here you can download your data',
                                 use_container_width=True,)
-            
-                #st.dataframe(result_df)
-                
+                            
+    if "result_df" in st.session_state:
+        result_df = st.session_state["result_df"]
+        
+        col_sorter = [i for i in result_df.columns if 'meta.' in i]
+    
+    if report_button:
+        
+        with st.spinner("Preparing report..."):
+                st.toast('Preparing report...!')
 
+                figures = []
+                
+                if conditions != []:
+                    
+                    for group in conditions:
+                        
+                        if "result_df" in globals():
+
+                            fig, ax = plt.subplots(2, figsize=(10, 7), height_ratios=(1, 2))
+                            methods.grouped_plot_traces_export(ax[1], df, t_col, t0, t1, group=group, layout=layout_df, bg_color=bg_color, ent=ent, 
+                                 ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
+                            
+                            sorter = layout_df[layout_df.Condition == group]['name'].unique()
+                            sorted_result = result_df[result_df['meta.CycID'].isin(sorter)]
+                            methods.text(ax[0], sorted_result[col_sorter], group=group)
+                            figures.append(fig)
+
+                        else:
+                            fig, ax = plt.subplots(1, figsize=(10, 4))
+                            methods.grouped_plot_traces_export(ax, df, t_col, t0, t1, group=group, layout=layout_df, bg_color=bg_color, ent=ent, 
+                                 ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
+                        #methods.plot_table_on_ax(ax)
+                            figures.append(fig)
+                
+                if ent == True:
+                    for col in data_cols:
+                        
+                        if "result_df" in globals():
+                            method = 'meta2d'
+                            focus = result_df[result_df['meta.CycID'] == col]
+                            cols = [col for col in focus.columns if method in col]
+
+                            per_col = [col for col in cols if 'PERIOD' in col.upper()][0]
+                            q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
+                            q = np.round(focus[q_col].mean(), 5)
+                            reject = q <= 0.05
+                            period = f"{np.round(focus[per_col].mean(),1)}"
+                            title = f"{col}. Period: {period} h. q-value: {q}. Reject: {reject}"
+                        else:
+                            title=None
+
+                        fig = methods.split_plot(df, t_col, col,
+                                                            ent=ent, ent_days = ent_days, unit=unit, 
+                                                            bg_color=bg_color, band_color=ent_color,
+                                                            order=order, T=T, title=title)
+                        figures.append(fig)
+                else:
+                    for col in data_cols:
+                        if "result_df" in globals():
+                            method = 'meta2d'
+                            focus = result_df[result_df['meta.CycID'] == col]
+                            cols = [col for col in focus.columns if method in col]
+
+                            per_col = [col for col in cols if 'PERIOD' in col.upper()][0]
+                            q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
+                            q = np.round(focus[q_col].mean(), 5)
+                            reject = q <= 0.05
+                            period = f"{np.round(focus[per_col].mean(),1)}"
+                            title = f"{col}. Period: {period} h. q-value: {q}. Reject: {reject}"
+                        else:
+                            title=None
+                            
+                        fig = methods.simple_plot( df, t_col, col, title=title)
+                        figures.append(fig)
+                    
+                pdf_buffer = methods.easy_pdf_report(figures)
+                
+                st.toast('Report ready to download!', icon='🎉')
+                report_spot.download_button(
+                        label="↓ Download report",
+                        data=pdf_buffer,
+                        file_name="rhythmicity_report.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
 
 
