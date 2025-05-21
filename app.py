@@ -26,7 +26,7 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = "0.3.1"
+version = "0.3.2"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
@@ -381,9 +381,7 @@ if uploaded_file is not None:
                             ax2.tick_params(axis='x', rotation=90)
                             ax2.set_ylabel('Period (h)')
                             ax2.set_title('Tested periodicity (only rhythmic samples)')
-                            
-                            st.pyplot(fig)
-                            
+                                                        
                             figures.append(fig)
                                                 
                     for group in conditions:
