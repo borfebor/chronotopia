@@ -13,6 +13,8 @@ from scipy import signal
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from io import BytesIO
+from statsmodels.tsa.tsatools import detrend
+from scipy.fft import fft, fftfreq
 
 class methods:
     
@@ -94,19 +96,43 @@ class methods:
     def linear_detrend(df, data_cols):
         return signal.detrend(df[data_cols], type='linear')
     
+    def cubic_detrend(df, data_cols):
+        return detrend(df[data_cols], order=3)
+        
     def rolling_mean(df, data_cols, window_size=10):
         
-        rolling_mean = df[data_cols].rolling(window=window_size, center=True).mean()
+        rolling_mean = df[data_cols].rolling(window=window_size, center=True, min_periods=1).mean()
         return df[data_cols] - rolling_mean
+    
+    def butter_lowpass_filter(data, cutoff, fs, order=4):
+        nyq = 0.5 * fs  # Nyquist frequency
+        normal_cutoff = cutoff / nyq
+        b, a = signal.butter(order, normal_cutoff, btype='low', analog=False)
+        return signal.filtfilt(b, a, data)    
+    
+    def hilbert_rolling_mean(df, data_cols, window_size=10):
+        
+        rolling_mean = df[data_cols].rolling(window=window_size, center=True, min_periods=1).mean()
+        
+        detrended_signal = df[data_cols] - rolling_mean
+        # Step 2: Calculate the amplitude envelope using the Hilbert transform
+        analytic_signal = signal.hilbert(detrended_signal)
+        amplitude_envelope = np.abs(analytic_signal)
+        # Step 3: Normalize the amplitude
+        normalized_signal = detrended_signal / amplitude_envelope
+        return normalized_signal
     
     def detrend(df, data_cols, t_col, method='None'):
         if method == 'None':
             return df[data_cols]
         else:
-            win_size = int(1/(df[t_col].diff().mean()) * 10)
-            st.write(f"Rolling mean window size: {win_size}")
+            suggested = int(1/(df[t_col].diff().mean()) * 10)
+            bot, top = int(suggested / 2), int(suggested * 2)
+            win_size = st.slider('Window size', bot, top, top)
             meth = {'Linear': methods.linear_detrend(df, data_cols),
-                   'Rolling mean': methods.rolling_mean(df, data_cols, win_size)}
+                   'Rolling mean': methods.rolling_mean(df, data_cols, win_size),
+                   'Hilbert + Rolling mean': methods.hilbert_rolling_mean(df, data_cols, win_size),
+                   'Cubic': methods.cubic_detrend(df, data_cols),}
             return meth[method]
         
     def min_max(df, data_cols):
@@ -301,7 +327,7 @@ class methods:
             
             ax[i -1 ].fill_between(plot.time_col, plot[p_col], color='#1F7A8C')
             ax[i -1 ].set_xlim(0, 24*times)    
-            ax[i -1 ].set_ylim(plot[p_col].mean())
+            ax[i -1 ].set_ylim(plot[p_col].mean(), plot[p_col].mean()+plot[p_col].std()*2)
             ax[i -1 ].set_yticks([])
             
             if times == 2:

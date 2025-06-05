@@ -20,13 +20,14 @@ import tempfile
 import os
 
 image = Image.open('logo.png')
+intro_image = Image.open('chrono_intro.png')
 st.sidebar.image(image)
 
 def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = "0.3.2"
+version = "0.4"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
@@ -38,19 +39,7 @@ if example:
     uploaded_file = 'hola'
 
 if uploaded_file is None:
-    #st.image(instructions)
-    st.markdown("""
-                ### Example Time Series Dataset
-
-| Time (min) |   A   |   B   |   C   |   D   |   E   |
-|------------|-------|-------|-------|-------|-------|
-|     0      | 1.23  | 4.56  | 3.21  | 2.34  | 5.67  |
-|    10      | 1.45  | 4.80  | 3.00  | 2.50  | 5.50  |
-|    20      | 1.60  | 4.90  | 3.10  | 2.70  | 5.30  |
-|    30      | 1.75  | 5.10  | 3.30  | 2.80  | 5.20  |
-|    40      | 1.90  | 5.20  | 3.50  | 3.00  | 5.00  |
-|    50      | 2.00  | 5.30  | 3.60  | 3.10  | 4.90  |
-                """)
+    st.image(intro_image)
 
     st.stop()
 
@@ -69,13 +58,28 @@ if uploaded_file is not None:
     layout = st.sidebar.toggle('Include experimental layout', False)
     
     df.columns = [col.strip() for col in df.columns]
-
+    
     t_col = st.sidebar.selectbox('Time column', [col for col in df.columns] )
-    t_unit = st.sidebar.selectbox('Time unit', ['Minutes', 'Hours', 'Days', 'Seconds'])
     
+    delta_t = np.mean(np.diff(df[t_col].values))  # assumes sorted time
+    
+    t_options = ['Minutes', 'Hours', 'Days', 'Seconds']
+    if delta_t > 1:
+        default = t_options.index('Minutes')
+    else:
+        default = t_options.index('Hours')
+        
+    t_unit = st.sidebar.selectbox('Time unit', t_options, default)
+
     data_cols = [col for col in df.columns if col != t_col]
-    #df.columns = t_col + data_cols
     
+    if len(data_cols) == 96:
+        
+        template = pd.DataFrame(data_cols, columns=['Sample'])
+        template['Condition'] = [f"COL_{int(i[-2:])}" for i in data_cols]
+        layout_df = template.copy()
+        layout_df['name'] = layout_df.Sample
+            
     layout_file = None
     if layout == True:
 
@@ -108,17 +112,21 @@ if uploaded_file is not None:
     
     df[t_col] = df[t_col].apply(lambda x: methods.time_changer(x, t_unit))
     
+    coo, cool = st.columns(2)
+
+    t_start = coo.number_input('Starting Timepoint', df[t_col].min(), df[t_col].max(), df[t_col].min())
+    t_end =  cool.number_input('Last Timepoint', t_start, df[t_col].max(),df[t_col].max() )
+    
+    df = df[(df[t_col] >= t_start)  & (df[t_col] <= t_end)]
+    
     st.sidebar.header('Analysis paramenters')
     
-    hourly = st.sidebar.toggle('Smoothen the data hourly', False)
+    hourly = st.sidebar.toggle('Smoothen the data', False)
     ent = st.sidebar.toggle('Include entrainment data', False)
     exclusion = st.sidebar.toggle('Select samples to exclude', False)
     test_a_bit = st.sidebar.toggle('Rhythmicity analysis parameters', False)
     
-    if exclusion:
-        exclusion_list = st.multiselect("Select samples to exclude", data_cols)
-        df = df.drop(columns=exclusion_list)
-        data_cols =  [col for col in df.columns if col != t_col]
+    exclusion_place = st.empty()
     
     method = 'meta2d'
     thresh = 0.05
@@ -144,24 +152,36 @@ if uploaded_file is not None:
     ent_color = backgroud['None']
     
     if hourly == True:
-        df = methods.hourly(df, t_col)
-    
+        #df = methods.hourly(df, t_col)
+        # Smooth with a 1-hour window
+        delta_t = np.mean(np.diff(df[t_col].values))  # assumes sorted time
+        samples_per_hour = int(round(1 / delta_t))
+        df[data_cols] = df[data_cols].rolling(window=samples_per_hour, center=True, min_periods=1).mean()
+        df = df.dropna()
+        #st.stop()
+        
     if ent == True:
         col1, col2, col3, col4 = st.columns(4)
         ent_days = col1.number_input('Entrainment cycles', 1, max_days, 1,  step=1) 
         T = col2.number_input('T cycle', 6, 48, 24,  step=1) 
-        cycle_type = col3.selectbox('Zeitgeber type', ['Darkness - Light', 'Light - Darkness', 'Cold - Warm', 'Warm - Cold'], 0) 
+        cycle_type = col3.selectbox('Zeitgeber type', ['Darkness - Light', 'Light - Darkness', 'Cold - Warm', 'Warm - Cold', 'Custom'], 0) 
         
-        parts = [part.strip() for part in cycle_type.split("-")]
-        fr_options = [i for i in ['Light', 'Darkness', 'Cold', 'Warm'] if i in parts]
-
-        freerun_type = col4.selectbox('Free running conditions', fr_options, 1) 
-        bg_color = backgroud[freerun_type]
-        #band_color = parts.remove(freerun_type)
-        band_type = [i for i in parts if i != freerun_type][0]
-        ent_color = backgroud[band_type]
-        
-        order = parts.index(band_type)
+        if cycle_type == 'Custom':
+            color1, color2, order_col = st.columns(3)
+            ent_color = color1.color_picker('Entrainment band', '#9BD1E5')
+            bg_color = color2.color_picker('Background color', '#ffffff')
+            order = order_col.toggle('Color order', [0, 1])
+        else:
+            parts = [part.strip() for part in cycle_type.split("-")]
+            fr_options = [i for i in ['Light', 'Darkness', 'Cold', 'Warm'] if i in parts]
+    
+            freerun_type = col4.selectbox('Free running conditions', fr_options, 1) 
+            bg_color = backgroud[freerun_type]
+            #band_color = parts.remove(freerun_type)
+            band_type = [i for i in parts if i != freerun_type][0]
+            ent_color = backgroud[band_type]
+            
+            order = parts.index(band_type)
         #st.write(ent_color)
     else:
         T = 0
@@ -169,10 +189,35 @@ if uploaded_file is not None:
         ent_days = 0
     
     norm_meth = c1.selectbox('Normalization', ['None', 'Z-Score', 'Min-Max'])
-    detrend_meth = c2.selectbox('Detrending', ['None', 'Linear', 'Rolling mean'])
+    detrend_meth = c2.selectbox('Detrending', ['None', 'Linear', 'Rolling mean', 'Hilbert + Rolling mean', 'Cubic'])
     
     df[data_cols] = methods.detrend(df, data_cols, t_col, detrend_meth)
     df[data_cols] = methods.normalize(df, data_cols, norm_meth)
+    
+    if exclusion:
+        ex_type, ex_cols = exclusion_place.columns([1,2])
+        if 'layout_df' in globals():
+            ex_options = layout_df.columns
+        else:
+            ex_options = ['Sample']
+            
+        ex_col = ex_type.selectbox('Exclude by', ex_options)
+        
+        if 'layout_df' in globals():
+            ex_values = layout_df[ex_col].unique()
+            exclusion_list = ex_cols.multiselect("Select samples to exclude", ex_values)
+            exclusion_list = layout_df[layout_df[ex_col].isin(exclusion_list)]['name'].to_list()
+
+        else:
+            ex_values = data_cols
+            exclusion_list = ex_cols.multiselect("Select samples to exclude", ex_values)
+            
+        df = df.drop(columns=exclusion_list)
+        st.write(f"{', '.join(exclusion_list)} excluded from data")
+        data_cols =  [col for col in df.columns if col != t_col]
+        
+        if 'layout_df' in globals():
+            layout_df = layout_df[~layout_df[ex_col].isin(exclusion_list)]
     
     df = df.dropna()
     
@@ -186,7 +231,7 @@ if uploaded_file is not None:
     conditions = []
     visu = ['Lineplot', 'Actogram']
 
-    if layout_file is not None:
+    if 'layout_df' in globals():
         
         conditions = list(layout_df.Condition.unique())
         #p_data_cols = data_cols + conditions
@@ -276,15 +321,16 @@ if uploaded_file is not None:
                         label="📄 Prepare report",
                         use_container_width=True
                     )
-
     if analysis_button:
         
         with st.spinner("Running R script..."):
             st.toast('Running MetaCycle...!')
-
             # Transpose and set index
-            rdf = df[(df[t_col] >= t_start_test) & (df[t_col] <= t_end_test)].set_index(t_col).transpose().reset_index()
+            df[t_col] = df[t_col].apply(lambda x: np.round(x,1))
+            test_df = df[np.isclose(df[t_col] % 1, 0)]
             
+            rdf = test_df[(test_df[t_col] >= t_start_test) & (test_df[t_col] <= t_end_test)].set_index(t_col).transpose().reset_index()
+            #st.stop()
             with tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode='w') as temp_file:
                 rdf.to_csv(temp_file.name, sep="\t", index=False)
                 input_path = temp_file.name
@@ -298,7 +344,7 @@ if uploaded_file is not None:
             )
             
             st.text("STDOUT:\n" + result.stdout)
-            #mest.text("STDERR:\n" + result.stderr)
+            #st.text("STDERR:\n" + result.stderr)
             
             if result.returncode != 0:
                 messages.error("R script failed.")
@@ -364,7 +410,7 @@ if uploaded_file is not None:
                             
                             fig, (ax1, ax2) = plt.subplots(1,2, figsize=(15, 7), layout='tight')
                             
-                            sns.boxplot(mix, x='Condition', y=per_col, hue='Condition', ax=ax1)
+                            sns.pointplot(mix, x='Condition', y=per_col, hue='Condition', ax=ax1, capsize=0.2)
                             sns.swarmplot(mix, x='Condition', y=per_col, hue='Condition',
                                           legend=False, edgecolor='k', size=8, linewidth=1, ax=ax1)
                             
@@ -374,7 +420,7 @@ if uploaded_file is not None:
                                                                                     
                             mix2 = mix[mix.reject == True]
                                                         
-                            sns.boxplot(mix2, x='Condition', y=per_col, hue='Condition', ax=ax2)
+                            sns.pointplot(mix2, x='Condition', y=per_col, hue='Condition', ax=ax2, capsize=0.2)
                             sns.swarmplot(mix2, x='Condition', y=per_col, hue='Condition', 
                                           legend=False, edgecolor='k', size=8,  linewidth=1, ax=ax2)
                             
