@@ -4,3 +4,4 @@ streamlit
 scipy
 matplotlib
 seaborn
+statsmodels
