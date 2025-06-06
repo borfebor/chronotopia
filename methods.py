@@ -14,7 +14,6 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from io import BytesIO
 from statsmodels.tsa.tsatools import detrend
-from scipy.fft import fft, fftfreq
 
 class methods:
     
@@ -127,8 +126,8 @@ class methods:
             return df[data_cols]
         else:
             suggested = int(1/(df[t_col].diff().mean()) * 10)
-            bot, top = int(suggested / 2), int(suggested * 2)
-            win_size = st.slider('Window size', bot, top, top)
+            bot, top = int(suggested), int(suggested * 4)
+            win_size = st.slider('Window size', bot, top, int(suggested*2))
             meth = {'Linear': methods.linear_detrend(df, data_cols),
                    'Rolling mean': methods.rolling_mean(df, data_cols, win_size),
                    'Hilbert + Rolling mean': methods.hilbert_rolling_mean(df, data_cols, win_size),

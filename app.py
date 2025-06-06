@@ -27,7 +27,7 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = "0.4"
+version = "0.4.1 (In Too Deep)"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
