@@ -477,7 +477,6 @@ if uploaded_file is not None:
                         for cat in sum_stats.tested.unique():
                             
                             sorted_stats = sum_stats[(sum_stats.tested == cat) & (sum_stats.reject == True)]
-                            st.write(look_for[cat])
 
                             look_col = [col for col in columns if look_for[cat] in col.upper()][0]
                             
@@ -488,7 +487,6 @@ if uploaded_file is not None:
                                 rows = math.ceil(N / cols)
                                 fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 5), layout='tight')
                                 
-                                st.write(rows, cols)
                                 if rows > 1:
                                     axes = axes.flatten()  # Flatten to simplify indexing
                                 
