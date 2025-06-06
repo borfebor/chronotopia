@@ -18,6 +18,8 @@ from PIL import Image
 import subprocess
 import tempfile
 import os
+import math
+
 
 image = Image.open('logo.png')
 intro_image = Image.open('chrono_intro.png')
@@ -27,7 +29,7 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = "0.4.1 (In Too Deep)"
+version = "0.5"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
@@ -316,11 +318,7 @@ if uploaded_file is not None:
                     help='Here you can download your data',
                     use_container_width=True,)
     
-    report_spot = st.sidebar.empty()
-    report_button = report_spot.button(
-                        label="📄 Prepare report",
-                        use_container_width=True
-                    )
+
     if analysis_button:
         
         with st.spinner("Running R script..."):
@@ -385,6 +383,25 @@ if uploaded_file is not None:
                             
     if "result_df" in st.session_state:
         result_df = st.session_state["result_df"]
+        
+        if "layout_df" in globals():
+
+            baloon = st.sidebar.button('Compare groups', 
+                                       use_container_width=True,)
+            if baloon:
+                #st.balloons()
+                sum_stats = methods.multicomparison(result_df, layout_df, conditions, method, thresh)
+                st.write(sum_stats)
+                st.session_state["sum_stats"] = sum_stats  # Save in session state
+    
+    if "sum_stats" in st.session_state:
+        sum_stats = st.session_state["sum_stats"]
+            
+    report_spot = st.sidebar.empty()
+    report_button = report_spot.button(
+                            label="📄 Prepare report",
+                            use_container_width=True
+                        )
             
     if report_button:
         
@@ -399,7 +416,7 @@ if uploaded_file is not None:
                         
                     if "result_df" in globals():
                         if "layout_df" in globals():
-                            
+                                                        
                             res = result_df.set_index('CycID')
                             trans = layout_df.set_index('name')
                             mix = pd.concat([res, trans], axis=1)
@@ -429,7 +446,117 @@ if uploaded_file is not None:
                             ax2.set_title('Tested periodicity (only rhythmic samples)')
                                                         
                             figures.append(fig)
-                                                
+                            
+                            N = len(conditions)  # number of experiments
+                            cols = math.ceil(math.sqrt(N))
+                            rows = math.ceil(N / cols)
+                            fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3), layout='tight')
+                            axes = axes.flatten()  # Flatten to simplify indexing
+                            
+                            for n, group in enumerate(conditions):
+                                ax = axes[n]
+                                sorter = layout_df[layout_df.Condition == group]['name'].unique()
+                                sorted_result = result_df[result_df['CycID'].isin(sorter)]
+                                
+                                methods.pie_chart(ax, sorted_result, method=method, group=group, thresh=thresh)
+                                ax.set_title(group)
+                                
+                            # Hide unused axes
+                            for j in range(N, len(axes)):
+                                fig.delaxes(axes[j])
+                              
+                            plt.legend(ncol=2)
+                            figures.append(fig)
+                            
+                    if "sum_stats" in globals():
+                        
+                        columns = [col for col in result_df.columns if method in col]
+                        
+                        look_for = dict(zip(['Rhythmicity', 'Period', 'Amplitude'], ['BH.Q', 'PERIOD', 'AMP']))
+            
+                        for cat in sum_stats.tested.unique():
+                            
+                            sorted_stats = sum_stats[(sum_stats.tested == cat) & (sum_stats.reject == True)]
+                            st.write(look_for[cat])
+
+                            look_col = [col for col in columns if look_for[cat] in col.upper()][0]
+                            
+                            if sorted_stats.shape[0] > 0:
+                                
+                                N = sorted_stats.shape[0] # number of experiments
+                                cols = math.ceil(math.sqrt(N))
+                                rows = math.ceil(N / cols)
+                                fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 5), layout='tight')
+                                
+                                st.write(rows, cols)
+                                if rows > 1:
+                                    axes = axes.flatten()  # Flatten to simplify indexing
+                                
+                                for n, d in sorted_stats.reset_index().iterrows():
+                                
+                                    # Get names for each group
+                                    names_group1 = layout_df.loc[layout_df.Condition == d.group1, 'name']
+                                    names_group2 = layout_df.loc[layout_df.Condition == d.group2, 'name']
+                                    
+                                    # Get values to plot
+                                    if cat == 'Rhythmicity':
+                                        
+                                        # Get values for each group
+                                        values_group1 = result_df.loc[result_df['CycID'].isin(names_group1), look_col].values
+                                        values_group2 = result_df.loc[result_df['CycID'].isin(names_group2), look_col].values
+                                        
+                                        # Count how many values are below the threshold
+                                        count_below_group1 = (values_group1 < thresh).sum() / len(values_group1)
+                                        count_below_group2 = (values_group2 < thresh).sum() / len(values_group2)
+                                        
+                                        # Data for bar plot
+                                        counts = [count_below_group1, count_below_group2]
+                                        labels = [d.group1, d.group2]
+                                        colors = ['#F97068', '#57C4E5']
+                                        
+                                        # Select correct axis
+                                        ax = axes[n] if np.size(axes) > 1 else axes
+                                        
+                                        # Create bar plot
+                                        bars = ax.bar(labels, counts, color=colors, width=0.8)
+
+                                    else:
+                                    
+                                        values_group1 = result_df.loc[result_df['CycID'].isin(names_group1), look_col].values
+                                        values_group2 = result_df.loc[result_df['CycID'].isin(names_group2), look_col].values
+                                        
+                                        # Prepare colors
+                                        colors = ['#F97068', '#57C4E5']
+                                        data_to_plot = [values_group1, values_group2]
+                                        
+                                        # Select correct axis
+                                        ax = axes[n] if np.size(axes) > 1 else axes
+                                        
+                                        # Create boxplot
+                                        bplot = ax.boxplot(data_to_plot, widths=0.8, patch_artist=True, showmeans=True)
+                                        
+                                        # Set colors and title
+                                        for patch, color in zip(bplot['boxes'], colors):
+                                            patch.set_facecolor(color)
+                                            
+                                        for mean in bplot['means']:
+                                            mean.set_color('k')
+                                            mean.set_linewidth(2)
+                                            
+                                        for median in bplot['medians']:
+                                            median.set_color('black')  # or any other color
+                                            median.set_linewidth(2)
+                                            
+                                    ax.set_ylabel(cat)
+   
+                                    ax.set_xticklabels([d.group1, d.group2])
+                                    title= f"p-val: {np.round(d['p-val'], 4)}"
+                                    ax.set_title(title)
+                                    
+                                plt.suptitle(f"{cat} differences", fontsize=20, weight='bold')
+                                figures.append(fig)
+
+                    #st.stop()
                     for group in conditions:
                         
                         if "result_df" in globals():

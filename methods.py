@@ -14,6 +14,8 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from io import BytesIO
 from statsmodels.tsa.tsatools import detrend
+from scipy.stats import fisher_exact, ttest_ind
+from itertools import combinations
 
 class methods:
     
@@ -510,6 +512,23 @@ class methods:
         table.set_fontsize(10)
         table.scale(1, 1.5)
         
+    def pie_chart(ax, df, method='meta2d', group='', thresh=0.05):
+            
+            group = group.replace('_', '-')
+            cols = [col for col in df.columns if method in col]
+            q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
+            
+            significant = df[df[q_col] <= thresh]
+            
+            replicates = df.shape[0]
+            sig_replicates = significant.shape[0]
+            percent = np.round(sig_replicates / replicates * 100, 1)
+            not_sig = 100 - percent
+            
+            pal = ['#F97068', '#57C4E5']
+
+            ax.pie([percent, not_sig], labels=['Significant', 'Not significant'], autopct='%1.1f%%', colors=pal)
+        
     def text(ax, df, method='meta2d', group='', thresh=0.05):
         
         group = group.replace('_', '-')
@@ -534,6 +553,51 @@ class methods:
 )
 
         ax.text(0, 1, formatted_text, fontsize=15, va='top', ha='left', transform=ax.transAxes)
-    #def normalization(df, cols, method):
         
-    #    for col in ps.columns:
+    def multicomparison(result_df, layout_df, conditions, method, thresh):
+        
+        sig_comparison = []
+        per_comparison = []
+        amp_comparison = []
+        
+        for x, y in combinations(conditions, 2):
+            
+            compar = f"{x}\n{y}"
+            
+            on_x = layout_df[layout_df.Condition == x]['name'].unique()
+            on_y = layout_df[layout_df.Condition == y]['name'].unique()
+            
+            sorted_x = result_df[result_df['CycID'].isin(on_x)]
+            sorted_y = result_df[result_df['CycID'].isin(on_y)]
+            
+            cols = [col for col in result_df.columns if method in col]
+
+            per_col = [col for col in cols if 'PERIOD' in col.upper()][0]
+            q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
+            amp_col = [col for col in cols if 'AMP' in col.upper()][0]
+            
+            table = []
+            for i in [sorted_x, sorted_y]:
+                significant = i[i[q_col] <= thresh]
+                non_sig = i.shape[0] - significant.shape[0]
+                sig = significant.shape[0]
+                table.append([sig, non_sig])
+            
+            odds, p = fisher_exact(table, alternative='two-sided')
+            t_stat_per, p_per = ttest_ind(sorted_x[per_col].values,
+                                        sorted_y[per_col].values, equal_var=False)  
+            t_stat_amp, p_amp = ttest_ind(sorted_x[amp_col].values,
+                                        sorted_y[amp_col].values, equal_var=False)  
+            
+            sig_comparison.append([x, y, compar, p, p < thresh, ])
+            per_comparison.append([x, y, compar, p_per, p_per < thresh])
+            amp_comparison.append([x, y, compar, p_amp, p_amp < thresh])  
+        
+        summary = pd.DataFrame()
+        
+        for n, d in enumerate([sig_comparison, per_comparison, amp_comparison]):
+            temp = pd.DataFrame(d, columns=['group1', 'group2', 'comparison', 'p-val', 'reject'])
+            temp['tested'] = ['Rhythmicity', 'Period', 'Amplitude'][n]
+            summary = pd.concat([summary, temp]).reset_index(drop=True)
+            
+        return summary
