@@ -136,9 +136,12 @@ class methods:
                    'Cubic': methods.cubic_detrend(df, data_cols),}
             return meth[method]
         
-    def min_max(df, data_cols):
-        top = df[data_cols].max().max()
-        return (df[data_cols] - df[data_cols].min()) / (top - df[data_cols].min()) * 100
+    def min_max(df, data_cols, mode='all'):
+        if mode == 'all':
+            top = df[data_cols].max().max()
+            return (df[data_cols] - df[data_cols].min()) / (top - df[data_cols].min()) * 100
+        elif mode == 'sample':
+            return (df[data_cols] - df[data_cols].min()) / (df[data_cols].max() - df[data_cols].min()) * 100
     
     def z_score(df, data_cols):
         mean = df[data_cols].mean()
@@ -149,10 +152,39 @@ class methods:
         if method == 'None':
             return df[data_cols]
         else:
-            meth = {'Min-Max': methods.min_max(df, data_cols),
+            meth = {'Sample-wise Min-Max': methods.min_max(df, data_cols, mode='sample'),
+                    'Global Min-Max': methods.min_max(df, data_cols, mode='all'),
                    'Z-Score': methods.z_score(df, data_cols)}
-            return meth[method]
+            return meth[method]  
+
+    def hampel_filter(series, window_size=10, n_sigmas=3):
+        new_series = series.copy()
+        k = 1.4826  # scaling factor for Gaussian distribution
+        for i in range(window_size, len(series) - window_size):
+            window = series[i - window_size:i + window_size + 1]
+            median = window.median()
+            mad = k * np.median(np.abs(window - median))
+            st.write(i)
+
+            if np.abs(series[i] - median) > n_sigmas * mad:
+                new_series[i] = median  # Replace outlier with window median
+    
+        return new_series
+    
+    def out_filter(df, cols):
+        # Step 1: Compute rolling median
+        roll_median = df[cols].rolling(window=100, center=True, min_periods=1).median()
         
+        # Step 2: Identify the spike (as a boolean mask)
+        is_spike = df[cols] > 5 * roll_median
+        
+        # Step 3: Replace spikes with NaN
+        df[cols] = df[cols].mask(is_spike, np.nan)
+        
+        # Step 4: Interpolate over the NaNs
+        df[cols] = df[cols].interpolate(method='linear')
+
+        return df[cols]#.where(df[cols] < 3 * roll_median, roll_median)
     
     def grouped_report(buffer, df, t_col, t0, t1, conditions, layout,
                                       bg_color='white', ent=False, ent_days=0,
@@ -221,6 +253,35 @@ class methods:
         plt.xlabel('Time (h)')
         plt.ylabel(unit)
         return fig
+    
+    def multiplot(ax, df, t_col, p_col, t0, t1, bg_color='white', ent=False, ent_days=0, 
+             order=0, T=24, color='white', unit='Measured unit'):
+        
+       # fig, ax = plt.subplots(1, figsize=(10, 4))
+        ax.set_facecolor(bg_color)
+        
+        plot = df[(df[t_col] >= t0) & (df[t_col] <= t1) ]
+        plt.plot(plot[t_col], plot[p_col])
+        
+        # Get actual min and max from your data
+        xmin = plot[t_col].min()
+        xmax = plot[t_col].max()
+        
+        # Calculate start and end of xticks, rounded to nearest multiples of 24
+        xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
+        xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
+        
+        if ent == True:
+            # Example for creating banded background every 12 hours
+    
+            methods.plot_entrainment(ax, plot, t_col, xtick_start, xtick_end, ent_days, order=order, T=T, color=color)
+        
+        # Generate ticks at every 24 units
+        xticks = np.arange(xtick_start, xtick_end + 1, 24)
+        plt.xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
+        plt.xlabel('Time (h)')
+        plt.ylabel(unit)
+        return ax
     
     def grouped_plot(df, t_col, t0, t1, group, layout,  bg_color='white', ent=False, ent_days=0, 
              order=0, T=24, color='white', unit='Measured unit'):
@@ -394,7 +455,7 @@ class methods:
             xmin = df[t_col].min()
             xmax = df[t_col].max()
             
-            # Calculate start and end of xticks, rounded to nearest multiples of 24
+            # callate start and end of xticks, rounded to nearest multiples of 24
             xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
             xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
             

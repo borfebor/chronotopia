@@ -29,7 +29,7 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = "0.5"
+version = "0.5.1"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
@@ -124,6 +124,7 @@ if uploaded_file is not None:
     st.sidebar.header('Analysis paramenters')
     
     hourly = st.sidebar.toggle('Smoothen the data', False)
+    outfilter = st.sidebar.toggle('Filter outliers', False)
     ent = st.sidebar.toggle('Include entrainment data', False)
     exclusion = st.sidebar.toggle('Select samples to exclude', False)
     test_a_bit = st.sidebar.toggle('Rhythmicity analysis parameters', False)
@@ -169,10 +170,10 @@ if uploaded_file is not None:
         cycle_type = col3.selectbox('Zeitgeber type', ['Darkness - Light', 'Light - Darkness', 'Cold - Warm', 'Warm - Cold', 'Custom'], 0) 
         
         if cycle_type == 'Custom':
-            color1, color2, order_col = st.columns(3)
+            color1, color2 = st.columns(2)
             ent_color = color1.color_picker('Entrainment band', '#9BD1E5')
             bg_color = color2.color_picker('Background color', '#ffffff')
-            order = order_col.toggle('Color order', [0, 1])
+            order = col4.selectbox('Color order', [0, 1], 0)
         else:
             parts = [part.strip() for part in cycle_type.split("-")]
             fr_options = [i for i in ['Light', 'Darkness', 'Cold', 'Warm'] if i in parts]
@@ -190,7 +191,7 @@ if uploaded_file is not None:
         order = 0
         ent_days = 0
     
-    norm_meth = c1.selectbox('Normalization', ['None', 'Z-Score', 'Min-Max'])
+    norm_meth = c1.selectbox('Normalization', ['None', 'Z-Score', 'Sample-wise Min-Max', 'Global Min-Max'])
     detrend_meth = c2.selectbox('Detrending', ['None', 'Linear', 'Rolling mean', 'Hilbert + Rolling mean', 'Cubic'])
     
     df[data_cols] = methods.detrend(df, data_cols, t_col, detrend_meth)
@@ -215,11 +216,13 @@ if uploaded_file is not None:
             exclusion_list = ex_cols.multiselect("Select samples to exclude", ex_values)
             
         df = df.drop(columns=exclusion_list)
-        st.write(f"{', '.join(exclusion_list)} excluded from data")
+        if len(exclusion_list) > 0:
+            st.write(f"{', '.join(exclusion_list)} excluded from data")
         data_cols =  [col for col in df.columns if col != t_col]
         
         if 'layout_df' in globals():
-            layout_df = layout_df[~layout_df[ex_col].isin(exclusion_list)]
+            #st.write(f"Excluded {exclusion_list} from {ex_col}")
+            layout_df = layout_df[~layout_df['name'].isin(exclusion_list)]
     
     df = df.dropna()
     
@@ -236,12 +239,8 @@ if uploaded_file is not None:
     if 'layout_df' in globals():
         
         conditions = list(layout_df.Condition.unique())
-        #p_data_cols = data_cols + conditions
         
         visu = visu + ['Lineplot [Mean ± SD]', 'Lineplot [Mean + Replicates]']
-        
-    #else:
-     #   p_data_cols = data_cols
     
     c, c1, c2 = st.columns([2, 1, 1])
     t0 = c1.number_input('Starting time to plot', int(df[t_col].min()), int(df[t_col].max()), int(df[t_col].min()),  step=1)    
@@ -402,7 +401,7 @@ if uploaded_file is not None:
                             label="📄 Prepare report",
                             use_container_width=True
                         )
-            
+    
     if report_button:
         
         with st.spinner("Preparing report..."):
@@ -578,6 +577,53 @@ if uploaded_file is not None:
                                  ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
                         #methods.plot_table_on_ax(ax)
                             figures.append(fig)
+                        
+                        sorter = layout_df[layout_df['Condition'] == group]
+                        names = sorter['name'].to_list()
+                        
+                        N = len(sorter)  # number of experiments
+                        cols = math.ceil(math.sqrt(N))
+                        rows = math.ceil(N / cols)
+                        fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3), layout='tight')
+                        axes = axes.flatten()  # Flatten to simplify indexing
+                                
+                        for n, subgroup in enumerate(names):
+                            ax = axes[n]
+                            ax.plot(df[t_col], df[subgroup])
+                            #ax = methods.multiplot(ax, df, t_col, group, t0, t1)
+                            
+                            if "result_df" in globals():
+                                focus = result_df[result_df['CycID'] == subgroup]
+
+                                cols = [col for col in focus.columns if method in col]
+    
+                                per_col = [col for col in cols if 'PERIOD' in col.upper()][0]
+                                q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
+                                q = np.round(focus[q_col].mean(), 5)
+                                reject = q <= thresh
+                                period = f"{np.round(focus[per_col].mean(),1)}"
+                                title = f"{subgroup}.\nPeriod: {period} h. q-value: {q} ({method} tested).\nReject: {reject} (Sig. thresh = {thresh})"
+                            else:
+                                title = subgroup
+                                    
+                            ax.set_title(title)
+                            ax.set_xlabel('Time (h)')
+                            ax.set_ylabel(unit)
+                            # Get actual min and max from your data
+                            xmin = df[t_col].min()
+                            xmax = df[t_col].max()
+                            
+                            # Calculate start and end of xticks, rounded to nearest multiples of 24
+                            xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
+                            xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
+                            ax.set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
+                                    
+                        # Hide unused axes
+                        for j in range(N, len(axes)):
+                            fig.delaxes(axes[j])
+                                  
+                        plt.suptitle(group, weight='bold', fontsize=20)
+                        figures.append(fig)
                 
                 if ent == True:
                     for col in data_cols:
@@ -596,9 +642,9 @@ if uploaded_file is not None:
                             title=None
 
                         fig = methods.split_plot(df, t_col, col,
-                                                            ent=ent, ent_days = ent_days, unit=unit, 
-                                                            bg_color=bg_color, band_color=ent_color,
-                                                            order=order, T=T, title=title)
+                                                 ent=ent, ent_days = ent_days, unit=unit, 
+                                                 bg_color=bg_color, band_color=ent_color,
+                                                 order=order, T=T, title=title)
                         figures.append(fig)
                 else:
                     for col in data_cols:
