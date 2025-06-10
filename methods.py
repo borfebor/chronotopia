@@ -156,35 +156,6 @@ class methods:
                     'Global Min-Max': methods.min_max(df, data_cols, mode='all'),
                    'Z-Score': methods.z_score(df, data_cols)}
             return meth[method]  
-
-    def hampel_filter(series, window_size=10, n_sigmas=3):
-        new_series = series.copy()
-        k = 1.4826  # scaling factor for Gaussian distribution
-        for i in range(window_size, len(series) - window_size):
-            window = series[i - window_size:i + window_size + 1]
-            median = window.median()
-            mad = k * np.median(np.abs(window - median))
-            st.write(i)
-
-            if np.abs(series[i] - median) > n_sigmas * mad:
-                new_series[i] = median  # Replace outlier with window median
-    
-        return new_series
-    
-    def out_filter(df, cols):
-        # Step 1: Compute rolling median
-        roll_median = df[cols].rolling(window=100, center=True, min_periods=1).median()
-        
-        # Step 2: Identify the spike (as a boolean mask)
-        is_spike = df[cols] > 5 * roll_median
-        
-        # Step 3: Replace spikes with NaN
-        df[cols] = df[cols].mask(is_spike, np.nan)
-        
-        # Step 4: Interpolate over the NaNs
-        df[cols] = df[cols].interpolate(method='linear')
-
-        return df[cols]#.where(df[cols] < 3 * roll_median, roll_median)
     
     def grouped_report(buffer, df, t_col, t0, t1, conditions, layout,
                                       bg_color='white', ent=False, ent_days=0,
