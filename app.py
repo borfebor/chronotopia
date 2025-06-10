@@ -20,6 +20,12 @@ import tempfile
 import os
 import math
 
+st.set_page_config(
+     page_title="Chronotopia",
+     page_icon="🕖",
+     layout="centered",
+     initial_sidebar_state="expanded"
+)
 
 image = Image.open('logo.png')
 intro_image = Image.open('chrono_intro.png')
@@ -29,7 +35,7 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = "0.5.1"
+version = "0.5.2"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
@@ -41,16 +47,24 @@ if example:
     uploaded_file = 'hola'
 
 if uploaded_file is None:
-    st.image(intro_image)
+    st.image(intro_image) 
 
     st.stop()
 
 if uploaded_file is not None:
     messages = st.empty()
     messages2 = st.empty()
+    
+    st.header('Data Preview')
+    sum_pre = st.empty()
+    preview = st.empty()
 
     st.header('Data Analysis')
-    c1, c2 = st.columns(2)
+    
+    settings = st.expander('Data analysis settings (Filtering, Normalization, Detrending...)')  
+    with settings:
+
+        c1, c2 = st.columns(2)
     
     if uploaded_file == 'hola':
         df = methods.example_data()
@@ -116,20 +130,22 @@ if uploaded_file is not None:
     
     coo, cool = st.columns(2)
 
-    t_start = coo.number_input('Starting Timepoint', df[t_col].min(), df[t_col].max(), df[t_col].min())
-    t_end =  cool.number_input('Last Timepoint', t_start, df[t_col].max(),df[t_col].max() )
+    t_start = c1.number_input('Starting Timepoint', df[t_col].min(), df[t_col].max(), df[t_col].min())
+    t_end =  c2.number_input('Last Timepoint', t_start, df[t_col].max(),df[t_col].max() )
     
     df = df[(df[t_col] >= t_start)  & (df[t_col] <= t_end)]
     
     st.sidebar.header('Analysis paramenters')
     
     hourly = st.sidebar.toggle('Smoothen the data', False)
-    outfilter = st.sidebar.toggle('Filter outliers', False)
+    #outfilter = st.sidebar.toggle('Filter outliers', False)
     ent = st.sidebar.toggle('Include entrainment data', False)
     exclusion = st.sidebar.toggle('Select samples to exclude', False)
     test_a_bit = st.sidebar.toggle('Rhythmicity analysis parameters', False)
     
-    exclusion_place = st.empty()
+    with settings:
+    
+        exclusion_place = st.empty()
     
     method = 'meta2d'
     thresh = 0.05
@@ -164,33 +180,34 @@ if uploaded_file is not None:
         #st.stop()
         
     if ent == True:
-        col1, col2, col3, col4 = st.columns(4)
-        ent_days = col1.number_input('Entrainment cycles', 1, max_days, 1,  step=1) 
-        T = col2.number_input('T cycle', 6, 48, 24,  step=1) 
-        cycle_type = col3.selectbox('Zeitgeber type', ['Darkness - Light', 'Light - Darkness', 'Cold - Warm', 'Warm - Cold', 'Custom'], 0) 
-        
-        if cycle_type == 'Custom':
-            color1, color2 = st.columns(2)
-            ent_color = color1.color_picker('Entrainment band', '#9BD1E5')
-            bg_color = color2.color_picker('Background color', '#ffffff')
-            order = col4.selectbox('Color order', [0, 1], 0)
-        else:
-            parts = [part.strip() for part in cycle_type.split("-")]
-            fr_options = [i for i in ['Light', 'Darkness', 'Cold', 'Warm'] if i in parts]
-    
-            freerun_type = col4.selectbox('Free running conditions', fr_options, 1) 
-            bg_color = backgroud[freerun_type]
-            #band_color = parts.remove(freerun_type)
-            band_type = [i for i in parts if i != freerun_type][0]
-            ent_color = backgroud[band_type]
+        with settings:
+            col1, col2, col3, col4 = st.columns(4)
+            ent_days = col1.number_input('Entrainment cycles', 1, max_days, 1,  step=1) 
+            T = col2.number_input('T cycle', 6, 48, 24,  step=1) 
+            cycle_type = col3.selectbox('Zeitgeber type', ['Darkness - Light', 'Light - Darkness', 'Cold - Warm', 'Warm - Cold', 'Custom'], 0) 
             
-            order = parts.index(band_type)
+            if cycle_type == 'Custom':
+                color1, color2 = st.columns(2)
+                ent_color = color1.color_picker('Entrainment band', '#9BD1E5')
+                bg_color = color2.color_picker('Background color', '#ffffff')
+                order = col4.selectbox('Color order', [0, 1], 0)
+            else:
+                parts = [part.strip() for part in cycle_type.split("-")]
+                fr_options = [i for i in ['Light', 'Darkness', 'Cold', 'Warm'] if i in parts]
+        
+                freerun_type = col4.selectbox('Free running conditions', fr_options, 1) 
+                bg_color = backgroud[freerun_type]
+                #band_color = parts.remove(freerun_type)
+                band_type = [i for i in parts if i != freerun_type][0]
+                ent_color = backgroud[band_type]
+                
+                order = parts.index(band_type)
         #st.write(ent_color)
     else:
         T = 0
         order = 0
         ent_days = 0
-    
+            
     norm_meth = c1.selectbox('Normalization', ['None', 'Z-Score', 'Sample-wise Min-Max', 'Global Min-Max'])
     detrend_meth = c2.selectbox('Detrending', ['None', 'Linear', 'Rolling mean', 'Hilbert + Rolling mean', 'Cubic'])
     
@@ -198,6 +215,7 @@ if uploaded_file is not None:
     df[data_cols] = methods.normalize(df, data_cols, norm_meth)
     
     if exclusion:
+        
         ex_type, ex_cols = exclusion_place.columns([1,2])
         if 'layout_df' in globals():
             ex_options = layout_df.columns
@@ -208,12 +226,12 @@ if uploaded_file is not None:
         
         if 'layout_df' in globals():
             ex_values = layout_df[ex_col].unique()
-            exclusion_list = ex_cols.multiselect("Select samples to exclude", ex_values)
+            exclusion_list = ex_cols.multiselect("Select data to exclude", ex_values)
             exclusion_list = layout_df[layout_df[ex_col].isin(exclusion_list)]['name'].to_list()
 
         else:
             ex_values = data_cols
-            exclusion_list = ex_cols.multiselect("Select samples to exclude", ex_values)
+            exclusion_list = ex_cols.multiselect("Select data to exclude", ex_values)
             
         df = df.drop(columns=exclusion_list)
         if len(exclusion_list) > 0:
@@ -226,70 +244,75 @@ if uploaded_file is not None:
     
     df = df.dropna()
     
-    st.header('Data Preview')
         
     duration = np.round(df[t_col].max(),1)
-    st.write(f"Experiment with data for {duration} hours")
-    
-    preview = st.empty()
+    sum_pre.write(f"Experiment with {len(data_cols)} sample recorded for {duration} hours (recorded every = {np.round(delta_t,2)} h)")
     
     conditions = []
     visu = ['Lineplot', 'Actogram']
-
+    
     if 'layout_df' in globals():
         
         conditions = list(layout_df.Condition.unique())
         
         visu = visu + ['Lineplot [Mean ± SD]', 'Lineplot [Mean + Replicates]']
+        
+    viz_settings = st.expander('Visualization settings (Plot type, sample selection, data unit...)')  
+
+    with viz_settings:
     
-    c, c1, c2 = st.columns([2, 1, 1])
-    t0 = c1.number_input('Starting time to plot', int(df[t_col].min()), int(df[t_col].max()), int(df[t_col].min()),  step=1)    
-    t1 = c2.number_input('End time to plot', int(df[df[t_col] > t0][t_col].min()), int(df[df[t_col] > t0][t_col].max()), int(df[df[t_col] > t0][t_col].max()), step=1) 
-    
-    plot_type = c.selectbox("Type of plot to visualize", visu)
+        c, c1, c2 = st.columns([2, 1, 1])
+        t0 = c1.number_input('Starting time to plot', int(df[t_col].min()), int(df[t_col].max()), int(df[t_col].min()),  step=1)    
+        t1 = c2.number_input('End time to plot', int(df[df[t_col] > t0][t_col].min()), int(df[df[t_col] > t0][t_col].max()), int(df[df[t_col] > t0][t_col].max()), step=1) 
+        
+        plot_type = c.selectbox("Type of plot to visualize", visu)
 
     short = df[[t_col] + data_cols[:5]].iloc[:5]
     preview.table(short)
-        
-    if plot_type == 'Lineplot':
-        
-        p_col = st.selectbox('Column to preview', data_cols)
-        unit = st.text_input('Data unit', 'Measured unit')
-        pre_plot = st.empty()
-        fig = methods.plot(df, t_col, p_col, t0, t1, bg_color=bg_color, ent=ent, 
-                     ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
-        
-        pre_plot.pyplot(fig)
-            
-    elif plot_type == 'Lineplot [Mean ± SD]':
-            
-        p_col = st.selectbox('Column to preview', conditions)
-        unit = st.text_input('Data unit', 'Measured unit')
-        pre_plot = st.empty()
-        
-        fig = methods.grouped_plot(df, t_col, t0, t1, group=p_col, layout=layout_df, bg_color=bg_color, ent=ent, 
-                 ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
-        pre_plot.pyplot(fig)
-        
-    elif plot_type == 'Lineplot [Mean + Replicates]':
-            
-        p_col = st.selectbox('Column to preview', conditions)
-        unit = st.text_input('Data unit', 'Measured unit')
-        pre_plot = st.empty()
-        
-        fig = methods.grouped_plot_traces(df, t_col, t0, t1, group=p_col, layout=layout_df, bg_color=bg_color, ent=ent, 
-                 ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
-        pre_plot.pyplot(fig)
+    
+    pre_plot = st.empty()
+
+    with viz_settings:
 
         
-    elif plot_type == 'Actogram':
-        p_col = st.selectbox('Column to preview', data_cols)
-        times = st.number_input("Plot N times", 1, int(np.round(df[t_col].max() / 24)), 1)
-        pre_plot = st.empty()
-        fig = methods.double_plot(df, t_col, p_col, ent_days, T, order, t0=t0, t1=t1, times=times, 
-                                  bg_color=bg_color, band_color=ent_color)
-        
-        pre_plot.pyplot(fig)
+        if plot_type == 'Lineplot':
+            
+            p_col = st.selectbox('Column to preview', data_cols)
+            unit = st.text_input('Data unit', 'Measured unit')
+            fig = methods.plot(df, t_col, p_col, t0, t1, bg_color=bg_color, ent=ent, 
+                         ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
+            
+            pre_plot.pyplot(fig)
+                
+        elif plot_type == 'Lineplot [Mean ± SD]':
+                
+            p_col = st.selectbox('Column to preview', conditions)
+            unit = st.text_input('Data unit', 'Measured unit')
+            #pre_plot = st.empty()
+            
+            fig = methods.grouped_plot(df, t_col, t0, t1, group=p_col, layout=layout_df, bg_color=bg_color, ent=ent, 
+                     ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
+            pre_plot.pyplot(fig)
+            
+        elif plot_type == 'Lineplot [Mean + Replicates]':
+                
+            p_col = st.selectbox('Column to preview', conditions)
+            unit = st.text_input('Data unit', 'Measured unit')
+            #pre_plot = st.empty()
+            
+            fig = methods.grouped_plot_traces(df, t_col, t0, t1, group=p_col, layout=layout_df, bg_color=bg_color, ent=ent, 
+                     ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
+            #pre_plot.pyplot(fig)
+    
+            
+        elif plot_type == 'Actogram':
+            p_col = st.selectbox('Column to preview', data_cols)
+            times = st.number_input("Plot N times", 1, int(np.round(df[t_col].max() / 24)), 1)
+            #pre_plot = st.empty()
+            fig = methods.double_plot(df, t_col, p_col, ent_days, T, order, t0=t0, t1=t1, times=times, 
+                                      bg_color=bg_color, band_color=ent_color)
+            
+    pre_plot.pyplot(fig)
     
     # Convert to BytesIO for download
     buf = BytesIO()
