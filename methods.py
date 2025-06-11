@@ -129,7 +129,10 @@ class methods:
         else:
             suggested = int(1/(df[t_col].diff().mean()) * 10)
             bot, top = int(suggested), int(suggested * 4)
-            win_size = st.slider('Window size', bot, top, int(suggested*2))
+            if 'Rolling' in method:
+                win_size = st.slider(f"Window size for trend correction (suggested size = {int(suggested*2)})", bot, top, int(suggested*2))
+            else:
+                win_size = 10
             meth = {'Linear': methods.linear_detrend(df, data_cols),
                    'Rolling mean': methods.rolling_mean(df, data_cols, win_size),
                    'Hilbert + Rolling mean': methods.hilbert_rolling_mean(df, data_cols, win_size),

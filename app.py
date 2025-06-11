@@ -20,9 +20,12 @@ import tempfile
 import os
 import math
 
+tab_logo = Image.open('tab_logo.png')
+
+
 st.set_page_config(
      page_title="Chronotopia",
-     page_icon="🕖",
+     page_icon=tab_logo,
      layout="centered",
      initial_sidebar_state="expanded"
 )
@@ -35,7 +38,7 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = "0.5.2"
+version = "0.5.3"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
@@ -57,6 +60,7 @@ if uploaded_file is not None:
     
     st.header('Data Preview')
     sum_pre = st.empty()
+    on = st.toggle("Show data preview")
     preview = st.empty()
 
     st.header('Data Analysis')
@@ -128,7 +132,7 @@ if uploaded_file is not None:
     
     df[t_col] = df[t_col].apply(lambda x: methods.time_changer(x, t_unit))
     
-    coo, cool = st.columns(2)
+    #coo, cool = st.columns(2)
 
     t_start = c1.number_input('Starting Timepoint', df[t_col].min(), df[t_col].max(), df[t_col].min())
     t_end =  c2.number_input('Last Timepoint', t_start, df[t_col].max(),df[t_col].max() )
@@ -171,7 +175,6 @@ if uploaded_file is not None:
     ent_color = backgroud['None']
     
     if hourly == True:
-        #df = methods.hourly(df, t_col)
         # Smooth with a 1-hour window
         delta_t = np.mean(np.diff(df[t_col].values))  # assumes sorted time
         samples_per_hour = int(round(1 / delta_t))
@@ -268,7 +271,9 @@ if uploaded_file is not None:
         plot_type = c.selectbox("Type of plot to visualize", visu)
 
     short = df[[t_col] + data_cols[:5]].iloc[:5]
-    preview.table(short)
+    
+    if on:
+        preview.table(short)
     
     pre_plot = st.empty()
 
