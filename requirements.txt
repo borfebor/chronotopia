@@ -5,3 +5,6 @@ scipy
 matplotlib
 seaborn
 statsmodels
+pyboat
+astropy
+sklearn
