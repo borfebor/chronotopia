@@ -12,6 +12,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import streamlit as st
 from methods import methods
+import scipy.spatial.distance as ssd
+from sklearn.manifold import MDS
+
 from io import BytesIO
 
 from PIL import Image
@@ -21,7 +24,6 @@ import os
 import math
 
 tab_logo = Image.open('tab_logo.png')
-
 
 st.set_page_config(
      page_title="Chronotopia",
@@ -38,7 +40,7 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = "0.5.3"
+version = "0.5.4"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
@@ -132,8 +134,6 @@ if uploaded_file is not None:
     
     df[t_col] = df[t_col].apply(lambda x: methods.time_changer(x, t_unit))
     
-    #coo, cool = st.columns(2)
-
     t_start = c1.number_input('Starting Timepoint', df[t_col].min(), df[t_col].max(), df[t_col].min())
     t_end =  c2.number_input('Last Timepoint', t_start, df[t_col].max(),df[t_col].max() )
     
@@ -145,7 +145,7 @@ if uploaded_file is not None:
     #outfilter = st.sidebar.toggle('Filter outliers', False)
     ent = st.sidebar.toggle('Include entrainment data', False)
     exclusion = st.sidebar.toggle('Select samples to exclude', False)
-    test_a_bit = st.sidebar.toggle('Rhythmicity analysis parameters', False)
+    test_a_bit = st.sidebar.expander('Analysis Parameters')#st.sidebar.toggle('Rhythmicity analysis parameters', False)
     
     with settings:
     
@@ -153,15 +153,17 @@ if uploaded_file is not None:
     
     method = 'meta2d'
     thresh = 0.05
-    if test_a_bit:
-        t1, t2 = st.sidebar.columns(2)
+    with test_a_bit:
+        t1, t2 = st.columns(2)
         t_start_test = t1.number_input('Minimum time', int(df[t_col].min()), int(df[t_col].max()), int(df[t_col].min()),  step=1)    
         t_end_test = t2.number_input('Last time', int(df[df[t_col] > t_start_test][t_col].min()), int(df[df[t_col] > t_start_test][t_col].max()), int(df[df[t_col] > t_start_test][t_col].max()), step=1) 
-        method = t1.selectbox('Preferred testing method', ['meta2d', 'JTK', 'ARS', 'LS', ], 0)   
+        method = t1.selectbox('Testing method', ['meta2d', 'JTK', 'ARS', 'LS', ], 0)   
         thresh = t2.selectbox('Significance threshold', [0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001], 0)   
+        period_estimation = st.selectbox('Period Estimation', ['Fast Fourier Transform (FFT)', 'Autocorrelation', 'Lomb-Scargle Periodogram', 'Wavelet Transform'], 2)
+
         
-    else:
-        t_start_test, t_end_test = df[t_col].min(), df[t_col].max()  
+    #else:
+    #    t_start_test, t_end_test = df[t_col].min(), df[t_col].max()  
         
     max_days = int(df[t_col].max() / 24) + 1
     
@@ -214,6 +216,7 @@ if uploaded_file is not None:
     norm_meth = c1.selectbox('Normalization', ['None', 'Z-Score', 'Sample-wise Min-Max', 'Global Min-Max'])
     detrend_meth = c2.selectbox('Detrending', ['None', 'Linear', 'Rolling mean', 'Hilbert + Rolling mean', 'Cubic'])
     
+
     df[data_cols] = methods.detrend(df, data_cols, t_col, detrend_meth)
     df[data_cols] = methods.normalize(df, data_cols, norm_meth)
     
@@ -237,8 +240,12 @@ if uploaded_file is not None:
             exclusion_list = ex_cols.multiselect("Select data to exclude", ex_values)
             
         df = df.drop(columns=exclusion_list)
-        if len(exclusion_list) > 0:
+        if (len(exclusion_list) > 0) & (len(exclusion_list) <= 5):
             st.write(f"{', '.join(exclusion_list)} excluded from data")
+        elif (len(exclusion_list) > 5):
+            arg = f"{', '.join(exclusion_list[:5])}"
+            st.write(f"{arg} and {len(exclusion_list[5:])} other samples were excluded from the data")
+
         data_cols =  [col for col in df.columns if col != t_col]
         
         if 'layout_df' in globals():
@@ -246,20 +253,19 @@ if uploaded_file is not None:
             layout_df = layout_df[~layout_df['name'].isin(exclusion_list)]
     
     df = df.dropna()
-    
         
     duration = np.round(df[t_col].max(),1)
     sum_pre.write(f"Experiment with {len(data_cols)} sample recorded for {duration} hours (recorded every = {np.round(delta_t,2)} h)")
     
     conditions = []
-    visu = ['Lineplot', 'Actogram']
+    visu = ['Lineplot', 'Actogram', 'Correlation', 'PCA']
     
     if 'layout_df' in globals():
         
         conditions = list(layout_df.Condition.unique())
         
         visu = visu + ['Lineplot [Mean ± SD]', 'Lineplot [Mean + Replicates]']
-        
+    
     viz_settings = st.expander('Visualization settings (Plot type, sample selection, data unit...)')  
 
     with viz_settings:
@@ -278,15 +284,19 @@ if uploaded_file is not None:
     pre_plot = st.empty()
 
     with viz_settings:
-
-        
+ 
         if plot_type == 'Lineplot':
             
             p_col = st.selectbox('Column to preview', data_cols)
             unit = st.text_input('Data unit', 'Measured unit')
+            per = methods.period_estimation(df, [p_col], t_col, method=period_estimation)
+            per = np.round(per, 2)
+
             fig = methods.plot(df, t_col, p_col, t0, t1, bg_color=bg_color, ent=ent, 
                          ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
             
+            plt.title(f"{p_col}. Period = {per.loc[p_col]} h ({period_estimation}-calculated)")
+
             pre_plot.pyplot(fig)
                 
         elif plot_type == 'Lineplot [Mean ± SD]':
@@ -297,6 +307,7 @@ if uploaded_file is not None:
             
             fig = methods.grouped_plot(df, t_col, t0, t1, group=p_col, layout=layout_df, bg_color=bg_color, ent=ent, 
                      ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
+
             pre_plot.pyplot(fig)
             
         elif plot_type == 'Lineplot [Mean + Replicates]':
@@ -314,11 +325,86 @@ if uploaded_file is not None:
             p_col = st.selectbox('Column to preview', data_cols)
             times = st.number_input("Plot N times", 1, int(np.round(df[t_col].max() / 24)), 1)
             #pre_plot = st.empty()
+
             fig = methods.double_plot(df, t_col, p_col, ent_days, T, order, t0=t0, t1=t1, times=times, 
                                       bg_color=bg_color, band_color=ent_color)
+            #plt.suptitle(f"{p_col}. Period = {periods.loc[p_col]} h ({period_estimation}-calculated)")
+
+
+        elif plot_type == 'Correlation':
             
+            p_col = st.selectbox('Colormap plette', ['viridis', 'vlag', 'coolwarm'], 1)
+            annot = st.selectbox('Show annotation', [True, False], 1)
+            ## Transpose to make each row a separate observation
+            list_of_series = [df[col].tolist() for col in data_cols]
+            
+            # Now stack into a 2D array
+            array = np.stack(list_of_series)
+            
+            # Pair-wise distance matrix (for instance, euclidean)
+            dist_matrix = 1-ssd.pdist(np.stack(list_of_series), metric='correlation')
+            dist_matrix = ssd.squareform(dist_matrix)
+            
+            # Plot a heatmap
+            
+            fig, ax = plt.subplots(figsize=(0.5*len(array), 0.5*len(array)))
+            sns.heatmap(dist_matrix, cmap=p_col, square=True, annot=annot,
+                        yticklabels=data_cols, xticklabels=data_cols, vmax=1, vmin=-1, center=0)
+            plt.title("Correlation Between Time Series")
+            plt.xlabel("Samples")
+            plt.ylabel("Samples")
+            
+        elif plot_type == 'PCA':
+            
+            list_of_series = [df[col].tolist() for col in data_cols]
+            annot = st.selectbox('Show annotation', [True, False], 1)
+            array = np.stack(list_of_series)
+            
+            # Pair-wise distance matrix (for instance, euclidean)
+            dist_matrix = 1-ssd.pdist(np.stack(list_of_series), metric='euclidean')
+            dist_matrix = ssd.squareform(dist_matrix)
+
+            mds = MDS(n_components=2, dissimilarity='precomputed')
+            embedding = mds.fit_transform(dist_matrix)
+            
+            if 'layout_df' in globals():
+            # Map group names to colors
+                groups = dict(zip(layout_df.name, layout_df.Condition))
+                unique_groups =  list(set(groups.values()))
+                color_map = {group: color for group, color in zip(unique_groups, plt.cm.tab20.colors)}
+
+            fig, ax = plt.subplots(figsize=(7, 7))
+            #plt.scatter(embedding[:, 0], embedding[:, 1])
+            #for i, label in enumerate(data_cols):
+            #    plt.text(embedding[i, 0], embedding[i, 1], label, ha='left', va='bottom')
+            plotted_groups = set()
+
+            for i, label in enumerate(data_cols):
+                if 'layout_df' in globals():
+                    group = groups[label]
+                    color = color_map[group]
+                else:
+                    color = '#F97068'
+                    group = 'default'
+                    
+                show_label = group if group not in plotted_groups else "_nolegend_"  # avoid duplicates
+                plotted_groups.add(group)
+                ax.scatter(embedding[i, 0], embedding[i, 1], color=color, label=show_label, 
+                           linewidth=1, edgecolor='k', alpha=0.7, s=50)
+                if annot == True:
+                    ax.text(embedding[i, 0], embedding[i, 1], label.replace(group, ''), ha='left', va='bottom')
+
+            ax.legend(title='Groups')
+
+            plt.title("Multidimensional Scaling of Time Series")
+            plt.xlabel("Dimension 1")
+            plt.ylabel("Dimension 2")
+            
+      
+    if 'unit' not in globals():
+        unit = 'signal'   
+        
     pre_plot.pyplot(fig)
-    
     # Convert to BytesIO for download
     buf = BytesIO()
     fig.savefig(buf, format="png")
@@ -349,7 +435,11 @@ if uploaded_file is not None:
     if analysis_button:
         
         with st.spinner("Running R script..."):
-            st.toast('Running MetaCycle...!')
+            st.toast('Calculating periods...!')
+            
+            periods = methods.period_estimation(df, data_cols, t_col, method=period_estimation).rename('Period')
+            periods = np.round(periods, 2)
+            
             # Transpose and set index
             df[t_col] = df[t_col].apply(lambda x: np.round(x,1))
             test_df = df[np.isclose(df[t_col] % 1, 0)]
@@ -361,6 +451,8 @@ if uploaded_file is not None:
                 input_path = temp_file.name
                 
             output_dir = tempfile.mkdtemp()
+            
+            st.toast('Testing rhythmicity...!')
 
             result = subprocess.run(
                 ["Rscript", "run_meta2d.R", input_path, output_dir],
@@ -389,9 +481,11 @@ if uploaded_file is not None:
                 col_sorter = [i for i in result_df.columns if 'meta.' in i]
                 result_df = result_df[col_sorter]
                 result_df.columns = [i.replace('meta.', '') for i in result_df.columns]
+                result_df = result_df.set_index('CycID')
+                result_df['Periods'] = periods
+                result_df = result_df.reset_index()
                 
                 cols = [col for col in result_df.columns if method in col]
-                per_col = [col for col in cols if 'PERIOD' in col.upper()][0]
                 q_col = [col for col in cols if 'BH.Q' in col.upper()][0]  
                 
                 result_df['reject'] = np.where(result_df[q_col] <= thresh, True, False)
@@ -446,32 +540,31 @@ if uploaded_file is not None:
                                                         
                             res = result_df.set_index('CycID')
                             trans = layout_df.set_index('name')
+                            
                             mix = pd.concat([res, trans], axis=1)
                             
-                            cols = [col for col in mix.columns if method in col]
-
-                            per_col = [col for col in cols if 'PERIOD' in col.upper()][0]
+                            per_col = 'Periods'
                             
                             fig, (ax1, ax2) = plt.subplots(1,2, figsize=(15, 7), layout='tight')
                             
-                            sns.pointplot(mix, x='Condition', y=per_col, hue='Condition', ax=ax1, capsize=0.2)
-                            sns.swarmplot(mix, x='Condition', y=per_col, hue='Condition',
-                                          legend=False, edgecolor='k', size=8, linewidth=1, ax=ax1)
+                            for ax in (ax1, ax2):
+                                
+                                if ax == ax2:
+                                    plot = mix[mix.reject == True]
+                                    ax.set_title('Tested periodicity (only rhythmic samples)')
+
+                                else:
+                                    plot = mix
+                                    ax.set_title('Tested periodicity (all samples)')
                             
-                            ax1.tick_params(axis='x', rotation=90)
-                            ax1.set_ylabel('Period (h)')
-                            ax1.set_title('Tested periodicity (all samples)')
-                                                                                    
-                            mix2 = mix[mix.reject == True]
-                                                        
-                            sns.pointplot(mix2, x='Condition', y=per_col, hue='Condition', ax=ax2, capsize=0.2)
-                            sns.swarmplot(mix2, x='Condition', y=per_col, hue='Condition', 
-                                          legend=False, edgecolor='k', size=8,  linewidth=1, ax=ax2)
-                            
-                            ax2.tick_params(axis='x', rotation=90)
-                            ax2.set_ylabel('Period (h)')
-                            ax2.set_title('Tested periodicity (only rhythmic samples)')
-                                                        
+                                sns.pointplot(plot, x='Condition', y=per_col, hue='Condition', ax=ax, capsize=0.2)
+                                sns.swarmplot(plot, x='Condition', y=per_col, hue='Condition',
+                                              legend=False, edgecolor='k', size=8, linewidth=1, ax=ax)
+                                
+                                ax.tick_params(axis='x', rotation=90)
+                                ax.set_ylabel('Period (h)')
+                                ax.set_ylim(18, 36)
+                                                                                        
                             figures.append(fig)
                             
                             N = len(conditions)  # number of experiments
@@ -625,7 +718,7 @@ if uploaded_file is not None:
 
                                 cols = [col for col in focus.columns if method in col]
     
-                                per_col = [col for col in cols if 'PERIOD' in col.upper()][0]
+                                per_col = 'Periods'
                                 q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
                                 q = np.round(focus[q_col].mean(), 5)
                                 reject = q <= thresh
@@ -660,7 +753,7 @@ if uploaded_file is not None:
                             focus = result_df[result_df['CycID'] == col]
                             cols = [col for col in focus.columns if method in col]
 
-                            per_col = [col for col in cols if 'PERIOD' in col.upper()][0]
+                            per_col = 'Periods'
                             q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
                             q = np.round(focus[q_col].mean(), 5)
                             reject = q <= thresh
@@ -680,7 +773,7 @@ if uploaded_file is not None:
                             focus = result_df[result_df['CycID'] == col]
                             cols = [col for col in focus.columns if method in col]
 
-                            per_col = [col for col in cols if 'PERIOD' in col.upper()][0]
+                            per_col = 'Periods'
                             q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
                             q = np.round(focus[q_col].mean(), 5)
                             reject = q <= thresh

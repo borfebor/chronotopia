@@ -16,166 +16,187 @@ from io import BytesIO
 from statsmodels.tsa.tsatools import detrend
 from scipy.stats import fisher_exact, ttest_ind
 from itertools import combinations
+from astropy.timeseries import LombScargle
+from pyboat import WAnalyzer
+
 
 class methods:
     
+    """
+    A collection of static methods for time-series processing, detrending,
+    normalization, visualization, and statistical analysis.
+    """
+
+    @staticmethod
     def example_data():
-    
-        # Settings
-        minutes_per_day = 24 * 60
-        total_minutes = minutes_per_day * 10
-        interval = 10
-        n_timepoints = total_minutes // interval
-        time = np.arange(0, total_minutes, interval)
-        
-        # Initialize dataframe
+        time = np.arange(0, 10 * 24 * 60, 10)  # 10 days, 10-minute intervals
         df = pd.DataFrame({'Time': time})
-        
-        # Oscillating samples
         np.random.seed(42)
-        n_samples = 10
-        n_oscillating = 8
-        
-        for i in range(n_samples):
-            if i < n_oscillating:
-                # Oscillating: sine wave with random phase and amplitude
+        for i in range(10):
+            if i < 8:
                 phase = np.random.uniform(0, 2 * np.pi)
                 amplitude = np.random.uniform(0.8, 1.2)
-                noise = np.random.normal(0, 0.2, size=n_timepoints)
-                signal = amplitude * np.sin(2 * np.pi * time / (24 * 60) + phase) + noise + 1
+                noise = np.random.normal(0, 0.2, len(time))
+                signal_data = amplitude * np.sin(2 * np.pi * time / (24 * 60) + phase) + noise + 1
             else:
-                # Non-oscillating: flat with some noise
-                signal = np.random.normal(1, 0.2, size=n_timepoints)
-            
-            df[f'Sample_{i+1}'] = signal
-        
+                signal_data = np.random.normal(1, 0.2, len(time))
+            df[f'Sample_{i+1}'] = signal_data
         return df
-    
-    def importer(file):
-        """
-        Loads a file (either in CSV, TSV, or XLSX format) into a Pandas DataFrame.
-        
-        Parameters:
-        file : str or file-like object
-            The file can be provided as a string representing the file path (in which case it's assumed to be on disk)
-            or as a file-like object (e.g., uploaded file in Streamlit).
-        
-        Returns:
-        df : pandas.DataFrame or None
-            The file content as a DataFrame if it is of a supported type (CSV, TSV, XLSX), otherwise returns None.
-        """
-        
-        if isinstance(file, str):
-            file_name = file
-        else:
-            file_name = file.name
 
-        if 'TXT' in file_name.upper() or 'TSV' in file_name.upper():
-            df = pd.read_csv(file, sep='\t')  # Tab-separated values
-        elif 'CSV' in file_name.upper():
-            df = pd.read_csv(file, sep=',')  # Comma-separated values
-        elif 'XLSX' in file_name.upper():
-            df = pd.read_excel(file)  # Excel file
-        else:
-            st.warning("""Not compatible format. Make sure that your data is either in XLSX, CSV or TXT""")
-            return None  # Return None explicitly if format is unsupported
-    
-        return df
-    
-    def time_changer(x, unit='Minutes'):
-    
-        unit_dict = {'Minutes': x / 60,
-                    'Hours': x ,
-                    'Days': x * 24,
-                    'Seconds': x / 60**2 ,  }
+    @staticmethod
+    def importer(file):
+        name = file if isinstance(file, str) else file.name
+        try:
+            if name.upper().endswith(('TXT', 'TSV')):
+                return pd.read_csv(file, sep='\t')
+            elif name.upper().endswith('CSV'):
+                return pd.read_csv(file)
+            elif name.upper().endswith('XLSX'):
+                return pd.read_excel(file)
+            else:
+                st.warning("Unsupported file format. Use XLSX, CSV, or TXT.")
+                return None
+        except Exception as e:
+            st.error(f"Error loading file: {e}")
+            return None
         
-        return unit_dict[unit]
-    
+    @staticmethod
+    def time_changer(x, unit='Minutes'):
+        conversions = {'Minutes': x / 60, 'Hours': x, 'Days': x * 24, 'Seconds': x / 3600}
+        return conversions.get(unit, x)
+
+    @staticmethod
     def hourly(df, t_col):
         return df[df[t_col] % 1 == 0]
-    
-    def linear_detrend(df, data_cols):
-        return signal.detrend(df[data_cols], type='linear')
-    
-    def cubic_detrend(df, data_cols):
-        return detrend(df[data_cols], order=3)
-        
-    def rolling_mean(df, data_cols, window_size=10):
-        
-        rolling_mean = df[data_cols].rolling(window=window_size, center=True, min_periods=1).mean()
-        return df[data_cols] - rolling_mean
-    
-    def butter_lowpass_filter(data, cutoff, fs, order=4):
-        nyq = 0.5 * fs  # Nyquist frequency
-        normal_cutoff = cutoff / nyq
-        b, a = signal.butter(order, normal_cutoff, btype='low', analog=False)
-        return signal.filtfilt(b, a, data)    
-    
-    def hilbert_rolling_mean(df, data_cols, window_size=10):
-        
-        rolling_mean = df[data_cols].rolling(window=window_size, center=True, min_periods=1).mean()
-        
-        detrended_signal = df[data_cols] - rolling_mean
-        # Step 2: Calculate the amplitude envelope using the Hilbert transform
-        analytic_signal = signal.hilbert(detrended_signal)
-        amplitude_envelope = np.abs(analytic_signal)
-        # Step 3: Normalize the amplitude
-        normalized_signal = detrended_signal / amplitude_envelope
-        return normalized_signal
-    
-    def detrend(df, data_cols, t_col, method='None'):
-        if method == 'None':
-            return df[data_cols]
-        else:
-            suggested = int(1/(df[t_col].diff().mean()) * 10)
-            bot, top = int(suggested), int(suggested * 4)
-            if 'Rolling' in method:
-                win_size = st.slider(f"Window size for trend correction (suggested size = {int(suggested*2)})", bot, top, int(suggested*2))
-            else:
-                win_size = 10
-            meth = {'Linear': methods.linear_detrend(df, data_cols),
-                   'Rolling mean': methods.rolling_mean(df, data_cols, win_size),
-                   'Hilbert + Rolling mean': methods.hilbert_rolling_mean(df, data_cols, win_size),
-                   'Cubic': methods.cubic_detrend(df, data_cols),}
-            return meth[method]
-        
-    def min_max(df, data_cols, mode='all'):
-        if mode == 'all':
-            top = df[data_cols].max().max()
-            return (df[data_cols] - df[data_cols].min()) / (top - df[data_cols].min()) * 100
-        elif mode == 'sample':
-            return (df[data_cols] - df[data_cols].min()) / (df[data_cols].max() - df[data_cols].min()) * 100
-    
-    def z_score(df, data_cols):
-        mean = df[data_cols].mean()
-        std = df[data_cols].std()
-        return (df[data_cols] - mean) / (std)
 
-    def normalize(df, data_cols, method='None'):
+    @staticmethod
+    def linear_detrend(df, cols):
+        return signal.detrend(df[cols], type='linear')
+
+    @staticmethod
+    def cubic_detrend(df, cols):
+        return detrend(df[cols], order=3)
+
+    @staticmethod
+    def rolling_mean(df, cols, window=10):
+        return df[cols] - df[cols].rolling(window=window, center=True, min_periods=1).mean()
+
+    @staticmethod
+    def hilbert_rolling_mean(df, cols, window=10):
+        baseline = df[cols].rolling(window=window, center=True, min_periods=1).mean()
+        detrended = df[cols] - baseline
+        envelope = np.abs(signal.hilbert(detrended))
+        return detrended / envelope
+
+    @staticmethod
+    def detrend(df, cols, t_col, method='None'):
         if method == 'None':
-            return df[data_cols]
-        else:
-            meth = {'Sample-wise Min-Max': methods.min_max(df, data_cols, mode='sample'),
-                    'Global Min-Max': methods.min_max(df, data_cols, mode='all'),
-                   'Z-Score': methods.z_score(df, data_cols)}
-            return meth[method]  
+            return df[cols]
+
+        suggested = int(1 / df[t_col].diff().mean() * 10)
+        win = st.slider(f"Window size (suggested = {suggested*2})", int(suggested), int(suggested * 4), int(suggested*2)) if 'Rolling' in method else 10
+
+        methods_map = {
+            'Linear': methods.linear_detrend(df, cols),
+            'Rolling mean': methods.rolling_mean(df, cols, win),
+            'Hilbert + Rolling mean': methods.hilbert_rolling_mean(df, cols, win),
+            'Cubic': methods.cubic_detrend(df, cols),
+        }
+        return methods_map.get(method, df[cols])
+
+    @staticmethod
+    def min_max(df, cols, mode='all'):
+        if mode == 'all':
+            top = df[cols].max().max()
+            return (df[cols] - df[cols].min()) / (top - df[cols].min()) * 100
+        return (df[cols] - df[cols].min()) / (df[cols].max() - df[cols].min()) * 100
+
+    @staticmethod
+    def z_score(df, cols):
+        return (df[cols] - df[cols].mean()) / df[cols].std()
+
+    @staticmethod
+    def normalize(df, cols, method='None'):
+        methods_map = {
+            'Sample-wise Min-Max': methods.min_max(df, cols, mode='sample'),
+            'Global Min-Max': methods.min_max(df, cols, mode='all'),
+            'Z-Score': methods.z_score(df, cols)
+        }
+        return methods_map.get(method, df[cols])
+
+    def autocovariance(x):
+        """Compute the autocovariance of a 1D array."""
+        x = x - np.mean(x)
+        result = np.correlate(x, x, mode='full')
+        return result[result.size//2:]
+
+    def autocorrelation(x):
+        """Normalize autocovariance to produce autocorrelation."""
+        acov = methods.autocovariance(x)
+        return acov / acov[0]
     
-    def grouped_report(buffer, df, t_col, t0, t1, conditions, layout,
-                                      bg_color='white', ent=False, ent_days=0,
-                                      order=0, T=24, band_color='white', unit='Measurement'):
+    def period_correlation(signal):
+        ac = methods.autocorrelation(signal)
     
-        with PdfPages(buffer) as pdf:
-            for group in conditions:
-                fig = methods.grouped_plot_traces(df, t_col, t0, t1, group=group, layout=layout,
-                                                  bg_color=bg_color, ent=ent, 
-                         ent_days=ent_days, order=order, T=T, color=band_color, unit=unit)
-                pdf.savefig(fig)
-                plt.close(fig)
-                
-        buffer.seek(0)
-        return buffer
+        min_lag = 20
+        max_lag = 28
+        # Find maximum in this range
+        lag_range = range(min_lag, max_lag+1)
+        peak_lag = lag_range[np.argmax([ac[lag] for lag in lag_range])]
+        return peak_lag
+    
+    def fft_period(signal, t):
+        # Perform FFT
+        freq_vals = np.fft.fftfreq(len(t))
+        power = np.abs(np.fft.fft(signal))**2
+    
+        # Only view the positive frequencies
+        positive_indices = freq_vals > 0
+        freq_vals = freq_vals[positive_indices]
+        power = power[positive_indices]
+    
+        # Find peak in power spectrum
+        peak_indices = np.argsort(power)[::-1]
+        peak_frequency = freq_vals[peak_indices[0]]
+        peak_period = 1/peak_frequency
+        #print(f"Peak period (FFT): {peak_period}")
+        return peak_period
+    
+    def Lomb_Scargle(signal, t):
         
+        frequency, power = LombScargle(t, signal).autopower(minimum_frequency=1/100,
+                                                                maximum_frequency=1/10)
+        peak = np.argmax(power)
+        peak_frequency = frequency[peak]
+        peak_period = 1/peak_frequency
+            
+        return peak_period
     
+    def wavelet(signal, t_col):
+        periods = np.linspace(18, 36, 100)
+        dt = np.mean(np.diff(t_col))  # assumes sorted time
+        
+        wAn = WAnalyzer(periods, dt, p_max=20)
+    
+        wAn.compute_spectrum(signal)
+    
+        wAn.get_maxRidge(power_thresh = 10, smoothing_wsize=20)
+        return wAn.ridge_data  # this is a pandas DataFrame holding the ridge results
+    
+    @staticmethod
+    def period_estimation(df, cols, t_col, method='None'):
+        if method == 'None':
+            return 'No period estimation'
+        
+        methods_map = {
+            'Fast Fourier Transform (FFT)': df[cols].apply(lambda x: methods.fft_period(x, df[t_col].values)),
+            'Lomb-Scargle Periodogram': df[cols].apply(lambda x: methods.Lomb_Scargle(x, df[t_col].values)),
+            'Autocorrelation':  df[cols].apply(lambda x: methods.period_correlation(x)),
+            'Wavelet Transform': df[cols].apply(lambda x: methods.wavelet(x, df[t_col])['periods'].mean())
+        }
+        return methods_map.get(method, df[cols])
+
+        
     def plot_entrainment(fig, plot, t_col, xtick_start, xtick_end, ent_days, order=0, T=24, color='#EBEBEB'):
         
             start_time = xtick_start
