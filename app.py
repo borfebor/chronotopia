@@ -13,6 +13,7 @@ import seaborn as sns
 import streamlit as st
 from methods import methods
 import scipy.spatial.distance as ssd
+from scipy.optimize import curve_fit
 from sklearn.manifold import MDS
 
 from io import BytesIO
@@ -22,6 +23,7 @@ import subprocess
 import tempfile
 import os
 import math
+from pyboat import WAnalyzer
 
 tab_logo = Image.open('tab_logo.png')
 
@@ -40,7 +42,7 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = "0.5.4"
+version = "0.6"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
@@ -83,7 +85,9 @@ if uploaded_file is not None:
     
     t_col = st.sidebar.selectbox('Time column', [col for col in df.columns] )
     
-    delta_t = np.mean(np.diff(df[t_col].values))  # assumes sorted time
+    times = df[t_col].value_counts()
+    n_replicates = times.unique()
+    delta_t = np.mean(np.diff(times.index))  # assumes sorted time
     
     t_options = ['Minutes', 'Hours', 'Days', 'Seconds']
     if delta_t > 1:
@@ -142,10 +146,17 @@ if uploaded_file is not None:
     st.sidebar.header('Analysis paramenters')
     
     hourly = st.sidebar.toggle('Smoothen the data', False)
+    normalize_time = st.sidebar.toggle('Always start time from 0', True)
     #outfilter = st.sidebar.toggle('Filter outliers', False)
     ent = st.sidebar.toggle('Include entrainment data', False)
     exclusion = st.sidebar.toggle('Select samples to exclude', False)
+    period_estimation = st.sidebar.selectbox('Period Estimation', ['Fast Fourier Transform (FFT)', 'Autocorrelation', 'Lomb-Scargle Periodogram', 'Wavelet Transform'], 2)
+
     test_a_bit = st.sidebar.expander('Analysis Parameters')#st.sidebar.toggle('Rhythmicity analysis parameters', False)
+    
+    if normalize_time == True:
+        
+        df[t_col] = df[t_col] - df[t_col].min()
     
     with settings:
     
@@ -159,7 +170,6 @@ if uploaded_file is not None:
         t_end_test = t2.number_input('Last time', int(df[df[t_col] > t_start_test][t_col].min()), int(df[df[t_col] > t_start_test][t_col].max()), int(df[df[t_col] > t_start_test][t_col].max()), step=1) 
         method = t1.selectbox('Testing method', ['meta2d', 'JTK', 'ARS', 'LS', ], 0)   
         thresh = t2.selectbox('Significance threshold', [0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001], 0)   
-        period_estimation = st.selectbox('Period Estimation', ['Fast Fourier Transform (FFT)', 'Autocorrelation', 'Lomb-Scargle Periodogram', 'Wavelet Transform'], 2)
 
         
     #else:
@@ -178,11 +188,18 @@ if uploaded_file is not None:
     
     if hourly == True:
         # Smooth with a 1-hour window
-        delta_t = np.mean(np.diff(df[t_col].values))  # assumes sorted time
         samples_per_hour = int(round(1 / delta_t))
+        if samples_per_hour < 1:
+            samples_per_hour = 1
         df[data_cols] = df[data_cols].rolling(window=samples_per_hour, center=True, min_periods=1).mean()
         df = df.dropna()
         #st.stop()
+        
+    norm_meth = c1.selectbox('Normalization', ['None', 'Z-Score', 'Sample-wise Min-Max', 'Global Min-Max'])
+    detrend_meth = c2.selectbox('Detrending', ['None', 'Linear', 'Rolling mean', 'Hilbert + Rolling mean', 'Cubic'])
+
+    df[data_cols] = methods.detrend(df, data_cols, t_col, detrend_meth)
+    df[data_cols] = methods.normalize(df, data_cols, norm_meth)
         
     if ent == True:
         with settings:
@@ -207,19 +224,18 @@ if uploaded_file is not None:
                 ent_color = backgroud[band_type]
                 
                 order = parts.index(band_type)
-        #st.write(ent_color)
+        
+        entrain_data = df[df[t_col] <= df[t_col].min() + T * ent_days]
+        
+        if np.mean(n_replicates) > 1:
+            entrain_data = entrain_data.groupby(t_col).agg({col:('mean') for col in data_cols}).reset_index()
+        phases = entrain_data[data_cols].apply(lambda x: methods.sine_phase(entrain_data[t_col], x))
+
     else:
         T = 0
         order = 0
         ent_days = 0
             
-    norm_meth = c1.selectbox('Normalization', ['None', 'Z-Score', 'Sample-wise Min-Max', 'Global Min-Max'])
-    detrend_meth = c2.selectbox('Detrending', ['None', 'Linear', 'Rolling mean', 'Hilbert + Rolling mean', 'Cubic'])
-    
-
-    df[data_cols] = methods.detrend(df, data_cols, t_col, detrend_meth)
-    df[data_cols] = methods.normalize(df, data_cols, norm_meth)
-    
     if exclusion:
         
         ex_type, ex_cols = exclusion_place.columns([1,2])
@@ -255,7 +271,7 @@ if uploaded_file is not None:
     df = df.dropna()
         
     duration = np.round(df[t_col].max(),1)
-    sum_pre.write(f"Experiment with {len(data_cols)} sample recorded for {duration} hours (recorded every = {np.round(delta_t,2)} h)")
+    sum_pre.write(f"Experiment with {len(data_cols)} sample recorded for {duration} hours (recorded every = {delta_t:.1f} h)")
     
     conditions = []
     visu = ['Lineplot', 'Actogram', 'Correlation', 'PCA']
@@ -265,6 +281,14 @@ if uploaded_file is not None:
         conditions = list(layout_df.Condition.unique())
         
         visu = visu + ['Lineplot [Mean ± SD]', 'Lineplot [Mean + Replicates]']
+        
+    if period_estimation == 'Wavelet Transform':
+        
+        visu = visu + ['Wavelet Ridge']
+    
+    if ent == True:
+        
+        visu = visu + ['Phase plot']
     
     viz_settings = st.expander('Visualization settings (Plot type, sample selection, data unit...)')  
 
@@ -284,6 +308,18 @@ if uploaded_file is not None:
     pre_plot = st.empty()
 
     with viz_settings:
+        
+        style = st.selectbox('Select style', ['white', 'ticks', 'whitegrid', 'darkgrid', 'dark'])
+
+        sns.set_style(style)
+        
+        if bg_color == 'white':
+            # Get the current style dictionary
+            style_dict = sns.axes_style()
+            
+            # Extract the background color of the axes
+            bg_color = style_dict.get('axes.facecolor')
+
  
         if plot_type == 'Lineplot':
             
@@ -295,7 +331,17 @@ if uploaded_file is not None:
             fig = methods.plot(df, t_col, p_col, t0, t1, bg_color=bg_color, ent=ent, 
                          ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
             
-            plt.title(f"{p_col}. Period = {per.loc[p_col]} h ({period_estimation}-calculated)")
+            if ent == True:
+                #peaks = methods.phase_calculation(entrain_data, t_col, p_col, T, delta_t)
+                t_mod = entrain_data[t_col] % 24
+                signal = entrain_data[p_col]
+                popt, _ = curve_fit(methods.sine_model, entrain_data[t_col], signal, p0=[1, 0, np.mean(signal)])
+
+                fitted_signal = methods.sine_model(entrain_data[t_col], *popt)
+                #sns.scatterplot(df.iloc[peaks], x=t_col, y=p_col)
+                plt.plot(entrain_data[t_col], fitted_signal, linestyle='--', color='k', alpha=0.8)
+            
+            plt.title(f"{p_col}. Period = {per.loc[p_col]} h ({period_estimation}-calculated).")
 
             pre_plot.pyplot(fig)
                 
@@ -325,11 +371,57 @@ if uploaded_file is not None:
             p_col = st.selectbox('Column to preview', data_cols)
             times = st.number_input("Plot N times", 1, int(np.round(df[t_col].max() / 24)), 1)
             #pre_plot = st.empty()
+            if np.mean(n_replicates) > 1:
+                df_plot = df.groupby(t_col).agg({col:('mean') for col in data_cols}).reset_index()
+            else:
+                df_plot = df.copy()
 
-            fig = methods.double_plot(df, t_col, p_col, ent_days, T, order, t0=t0, t1=t1, times=times, 
+            fig = methods.double_plot(df_plot, t_col, p_col, ent_days, T, order, t0=t0, t1=t1, times=times, 
                                       bg_color=bg_color, band_color=ent_color)
             #plt.suptitle(f"{p_col}. Period = {periods.loc[p_col]} h ({period_estimation}-calculated)")
+            
+        elif plot_type == 'Phase plot':
+            
+            p_col = st.selectbox('Column to preview', data_cols)
+            peaks = phases.loc[p_col]
+            
+            fig = plt.figure(figsize=(3,3))
+            ax = fig.add_subplot(111, polar=True)
+            methods.phase_plot(entrain_data, ax, peaks, pal=[bg_color, ent_color], order=order)
 
+        elif plot_type == 'Wavelet Ridge':
+            
+            p_col = st.selectbox('Column to preview', data_cols)
+            unit = st.text_input('Data unit', 'Measured unit')
+            
+            signal = df[p_col]
+            periods = np.linspace(18, 36, 100)
+            dt = np.mean(np.diff(df[t_col]))  # assumes sorted time
+            
+            wAn = WAnalyzer(periods, dt, p_max=20)
+        
+            wAn.compute_spectrum(signal)
+        
+            wAn.get_maxRidge(power_thresh = 10, smoothing_wsize=20)
+
+            rd = wAn.ridge_data # this is a pandas DataFrame holding the ridge results
+            
+            #fig, ax = plt.subplots(1, 2, layout='constrained', gridspec_kw={'width_ratios': [4, 1]})
+            fig, axes = plt.subplot_mosaic("AAAAC;DDDDD", layout='constrained')
+
+            wAn.draw_Ridge()
+            sns.kdeplot(
+                    rd, y='periods', x='time',
+                    fill=True, thresh=0, levels=100, cmap="viridis",
+                        bw_adjust=0.5, # smoother KDE
+                    clip=((rd['time'].min(), rd['time'].max()), (18, 36)), ax=axes['A'] 
+                )
+                #plt.ylim(18, 36)
+            sns.lineplot(rd, x='time', y='periods', color='w', ax=axes['A'])
+
+            sns.kdeplot(rd, y='periods', fill=True, ax=axes['C'])
+            axes['D'].plot(df[t_col], df[p_col])
+            plt.suptitle(f"{p_col} Estimated period: {np.round(np.average(rd.periods, weights=rd.power),2)} h")
 
         elif plot_type == 'Correlation':
             
@@ -444,7 +536,11 @@ if uploaded_file is not None:
             df[t_col] = df[t_col].apply(lambda x: np.round(x,1))
             test_df = df[np.isclose(df[t_col] % 1, 0)]
             
-            rdf = test_df[(test_df[t_col] >= t_start_test) & (test_df[t_col] <= t_end_test)].set_index(t_col).transpose().reset_index()
+            if np.mean(n_replicates) > 1:
+                rdf = test_df.groupby(t_col).agg({col:('mean') for col in data_cols}).transpose()
+            else:
+                rdf = test_df[(test_df[t_col] >= t_start_test) & (test_df[t_col] <= t_end_test)].set_index(t_col).transpose().reset_index()
+            
             #st.stop()
             with tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode='w') as temp_file:
                 rdf.to_csv(temp_file.name, sep="\t", index=False)

@@ -9,7 +9,9 @@ Created on Mon May  5 11:39:58 2025
 import pandas as pd
 import numpy as np
 import streamlit as st
+import seaborn as sns
 from scipy import signal
+from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from io import BytesIO
@@ -181,21 +183,110 @@ class methods:
         wAn.compute_spectrum(signal)
     
         wAn.get_maxRidge(power_thresh = 10, smoothing_wsize=20)
-        return wAn.ridge_data  # this is a pandas DataFrame holding the ridge results
+        return np.average(wAn.ridge_data['periods'], weights=wAn.ridge_data['power'])  # this is a pandas DataFrame holding the ridge results
     
     @staticmethod
     def period_estimation(df, cols, t_col, method='None'):
         if method == 'None':
             return 'No period estimation'
-        
+    
         methods_map = {
-            'Fast Fourier Transform (FFT)': df[cols].apply(lambda x: methods.fft_period(x, df[t_col].values)),
-            'Lomb-Scargle Periodogram': df[cols].apply(lambda x: methods.Lomb_Scargle(x, df[t_col].values)),
-            'Autocorrelation':  df[cols].apply(lambda x: methods.period_correlation(x)),
-            'Wavelet Transform': df[cols].apply(lambda x: methods.wavelet(x, df[t_col])['periods'].mean())
+            'Fast Fourier Transform (FFT)': lambda: df[cols].apply(lambda x: methods.fft_period(x, df[t_col].values)),
+            'Lomb-Scargle Periodogram':    lambda: df[cols].apply(lambda x: methods.Lomb_Scargle(x, df[t_col].values)),
+            'Autocorrelation':             lambda: df[cols].apply(lambda x: methods.period_correlation(x)),
+            'Wavelet Transform':           lambda: df[cols].apply(lambda x: methods.wavelet(x, df[t_col]))
         }
-        return methods_map.get(method, df[cols])
+    
+        # Get the selected method and execute it if exists, otherwise return the original df[cols]
+        return methods_map.get(method, lambda: df[cols])()
 
+    
+    def phase_time_arranger(df, t_col, T=24):
+        df['norm_time'] = df[t_col].astype(int)
+        df['norm_time'] = df['norm_time'] - df['norm_time'].min()
+    
+        df['norm_day'] = df.norm_time / T - np.trunc(df.norm_time / T)
+        df['norm_day'] = df.norm_day * T
+        df['norm_day'] = df['norm_day'].astype(int)
+        return df
+    
+    def find_phase(df, p_col, T, delta_t):
+        
+        d = T/delta_t * 0.5
+        peaks = signal.find_peaks(df[p_col], distance=d)[0]
+        #peak_hours = df.iloc[peaks]['norm_day'].values
+        return peaks
+    
+    def sine_model(t, A, phi, C, T=24):
+        return A * np.sin(2 * np.pi * t / T + phi) + C
+    
+    def sine_phase(t, data, T=24):
+        # Fit the model
+        p0 = [np.std(data), 0, np.mean(data)]
+    
+        # Fit sine curve
+        params, _ = curve_fit(lambda t, A, phi, C: methods.sine_model(t, A, phi, C, T),
+                          t, data, p0=p0)
+        
+        # Convert fitted phase to hours
+        fitted_signal = methods.sine_model(t, *params)
+        
+        peaks = signal.find_peaks(fitted_signal)[0]
+
+        peak_hours = np.mean(t[peaks] % 24)
+        
+        return peak_hours
+    
+    def phase_calculation(df, t_col, p_col, T=24, delta_t=1):
+    
+        df = methods.phase_time_arranger(df, t_col, T)
+        delta_t = np.mean(np.diff(df[t_col].values))  #
+        
+        peak_hours = methods.find_phase(df, p_col, T, delta_t)
+        
+        return peak_hours
+    
+    def phase_plot(ent, ax, peaks, group='norm_day', pal=['#EBEBEB', '#FFFFFF'], order=0):
+
+        if order == 0:
+            pal = pal[::-1]
+        # Simulated data
+        peak_hours = peaks#ent.iloc[peaks][group].values  # 100 genes
+        angles = 2 * np.pi * peak_hours / 24
+    
+        #pal = sns.color_palette('vlag', 5).as_hex()
+    
+        # Histogram
+        num_bins = 24
+        bins = np.linspace(0, 2 * np.pi, num_bins + 1)
+        counts, _ = np.histogram(angles, bins=bins)
+        bin_centers = (bins[:-1] + bins[1:]) / 2
+    
+    
+        # === Step 1: Draw background half-sectors ===
+        # Fill from 0 to π (e.g., "night")
+        ax.bar(x=np.linspace(0, np.pi, 100), height=[max(counts)*1.2]*100,
+               width=np.pi/100, bottom=0, color=pal[0], alpha=1, edgecolor='none', zorder=-10)
+    
+        # Fill from π to 2π (e.g., "day")
+        ax.bar(x=np.linspace(np.pi, 2*np.pi, 100), height=[max(counts)*1.2]*100,
+               width=np.pi/100, bottom=0, color=pal[1], alpha=1, edgecolor='none', zorder=-10)
+    
+        # === Step 2: Draw actual data bars ===
+        bars = ax.bar(bin_centers, counts, width=2*np.pi/num_bins, bottom=0.0,
+                      align='center', alpha=1, color='#022F40', edgecolor='k')
+    
+        # === Step 3: Styling ===
+        ax.set_theta_zero_location("N")
+        ax.set_theta_direction(-1)
+        xtick_hours = [0, 6, 12, 18]
+        xtick_angles = [2 * np.pi * h / 24 for h in xtick_hours]
+    
+        ax.set_xticks(xtick_angles)
+        ax.set_xticklabels([str(h) for h in xtick_hours])
+        #ax.set_yticklabels([i for i in range(, 10, 2)])
+        ax.set_ylim(0, max(counts)*1.2)
+        plt.locator_params(axis='y', nbins=2)
         
     def plot_entrainment(fig, plot, t_col, xtick_start, xtick_end, ent_days, order=0, T=24, color='#EBEBEB'):
         
@@ -217,7 +308,7 @@ class methods:
                 band_start = start_time + i * delta + T/2 * order
                 band_end = band_start + delta 
                 if i % 2 == 0:  # Every other band
-                    plt.axvspan(band_start, band_end, color=color, alpha=1)
+                    plt.axvspan(band_start, band_end, color=color, alpha=1, zorder=-10)
             return fig
         
     def plot(df, t_col, p_col, t0, t1, bg_color='white', ent=False, ent_days=0, 
@@ -227,7 +318,12 @@ class methods:
         ax.set_facecolor(bg_color)
         
         plot = df[(df[t_col] >= t0) & (df[t_col] <= t1) ]
-        plt.plot(plot[t_col], plot[p_col])
+        #plt.plot(plot[t_col], plot[p_col])
+        sns.lineplot(plot, x=t_col, y=p_col)
+        
+        scat = st.toggle('Show datapoints', True)
+        if scat:
+            sns.scatterplot(plot, x=t_col, y=p_col, edgecolor='k', zorder=10)
         
         # Get actual min and max from your data
         xmin = plot[t_col].min()
@@ -441,7 +537,8 @@ class methods:
                     
             fig, ax = plt.subplots(1, figsize=(12, 7))
             ax.set_facecolor(bg_color)
-            ax.plot(df[t_col], df[col])
+            #ax.plot(df[t_col], df[col])
+            sns.lineplot(df, x=t_col, y=col, ax=ax)
             if title == None:
                 ax.set_title(col)
             else:
