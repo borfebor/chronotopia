@@ -44,6 +44,141 @@ class methods:
                 signal_data = np.random.normal(1, 0.2, len(time))
             df[f'Sample_{i+1}'] = signal_data
         return df
+    
+    def generate_rhythm_dataset(
+        num_days=10,
+        points_per_day=24,
+        n_samples=50,
+        percent_rhythmic=0.6,
+        period=24.0,               # intrinsic period in hours (can be scalar or (min,max))
+        entrain=False,
+        entrain_start_day=0,
+        entrain_end_day=4,
+        entrain_period=24.0,       # period of the entraining cycle in hours
+        noise_sd=0.5,
+        amp_range=(0.8, 1.2),
+        phase_jitter_sd=0.2,       # radians jitter when entrained
+        intrinsic_period_jitter=0.2, # hours sd to jitter each sample's intrinsic period
+        nonrhythm_drift=True,
+        random_seed=None,
+        waveform='sin'             # 'sin' or 'square' or 'saw'
+    ):
+        """
+        Returns (data_df, meta_df, time_hours)
+        data_df: pandas DataFrame with columns ['time_hours', 'sample_0', 'sample_1', ...]
+        meta_df: pandas DataFrame with per-sample metadata (is_rhythmic, amplitude, intrinsic_period, phase0)
+        time_hours: numpy array of times in hours
+        """
+        rng = np.random.default_rng(random_seed)
+    
+        total_points = int(num_days * points_per_day) +1
+        dt = 24 / points_per_day
+        time_hours = np.arange(0, total_points) * dt
+    
+        # Determine rhythmic samples
+        n_rhyth = int(round(n_samples * percent_rhythmic))
+        is_rhythmic = np.array([True]*n_rhyth + [False]*(n_samples-n_rhyth))
+        rng.shuffle(is_rhythmic)
+    
+        # Allow period argument to be scalar or (min,max) for sampling
+        if np.isscalar(period):
+            period_arr = rng.normal(loc=period, scale=intrinsic_period_jitter, size=n_samples)
+        else:
+            # period given as (min,max)
+            period_arr = rng.uniform(low=period[0], high=period[1], size=n_samples)
+    
+        # amplitude & initial phase
+        amp_arr = rng.uniform(amp_range[0], amp_range[1], size=n_samples)
+        phase0 = rng.uniform(-np.pi, np.pi, size=n_samples)
+    
+        # entrainment times in hours
+        t_entrain_start = entrain_start_day * 24.0
+        t_entrain_end = entrain_end_day * 24.0
+    
+        # precompute driving phase if entrain
+        if entrain:
+            driving_phase = 2 * np.pi * (time_hours / entrain_period)
+        else:
+            driving_phase = None
+    
+        # prepare output array
+        data = np.zeros((total_points, n_samples))
+    
+        for i in range(n_samples):
+            A = amp_arr[i]
+            intrinsic_T = max(0.1, period_arr[i])
+            # track instantaneous phase
+            phase = np.zeros(total_points)
+    
+            if is_rhythmic[i]:
+                # before entrainment window (or if no entrainment)
+                for t_idx, t in enumerate(time_hours):
+                    if entrain and (t_entrain_start <= t < t_entrain_end):
+                        # follow driving phase + small per-sample phase offset and jitter
+                        sample_phase = driving_phase[t_idx] + phase0[i] + rng.normal(0, phase_jitter_sd)
+                        phase[t_idx] = sample_phase
+                    else:
+                        if entrain:
+                            # if we are at the first point after release, find phase at release and continue with intrinsic freq
+                            if t == 0:
+                                # no prior value
+                                phase[t_idx] = phase0[i]
+                            else:
+                                # If previous time was entrained, continue from that phase; otherwise continue advancing
+                                prev_phase = phase[t_idx-1]
+                                # advance by intrinsic angular velocity
+                                omega = 2*np.pi / intrinsic_T
+                                phase[t_idx] = prev_phase + omega * (dt)
+                        else:
+                            # never entrained: simple intrinsic evolution from phase0
+                            if t_idx == 0:
+                                phase[t_idx] = phase0[i]
+                            else:
+                                omega = 2*np.pi / intrinsic_T
+                                phase[t_idx] = phase[t_idx-1] + omega * (dt)
+    
+                # compute waveform
+                if waveform == 'sin':
+                    signal = A * np.sin(phase)
+                elif waveform == 'square':
+                    signal = A * np.sign(np.sin(phase))
+                elif waveform == 'saw':
+                    # sawtooth from -1 to 1
+                    signal = A * (2*(phase/(2*np.pi) - np.floor(phase/(2*np.pi)+0.5)))
+                else:
+                    raise ValueError("unsupported waveform")
+    
+                # add noise
+                signal = signal + rng.normal(0, noise_sd, size=signal.shape)
+    
+            else:
+                # non-rhythmic: low freq drift + white noise
+                drift = np.zeros_like(time_hours)
+                if nonrhythm_drift:
+                    n_trend_components = rng.integers(1,4)
+                    for _ in range(n_trend_components):
+                        freq = rng.uniform(0.01, 0.2)  # cycles per hour ~ very slow
+                        amp = rng.uniform(0.1, 1.0) * A
+                        phase_tr = rng.uniform(0, 2*np.pi)
+                        drift += amp * np.sin(2*np.pi*freq*time_hours + phase_tr)
+                signal = drift + rng.normal(0, noise_sd*1.5, size=time_hours.shape)
+    
+            data[:, i] = signal
+    
+        # Build DataFrames
+        cols = [f"sample_{i+1}" for i in range(n_samples)]
+        data_df = pd.DataFrame(data, columns=cols)
+        data_df.insert(0, "time_hours", time_hours)
+    
+        meta_df = pd.DataFrame({
+            "sample": cols,
+            "is_rhythmic": is_rhythmic,
+            "amplitude": amp_arr,
+            "intrinsic_period_hours": period_arr,
+            "phase0_radians": phase0
+        })
+    
+        return data_df, meta_df, time_hours
 
     @staticmethod
     def importer(file):
@@ -174,8 +309,8 @@ class methods:
             
         return peak_period
     
-    def wavelet(signal, t_col):
-        periods = np.linspace(18, 36, 100)
+    def wavelet(signal, t_col, min_period, max_period):
+        periods = np.linspace(min_period, max_period, 100)
         dt = np.mean(np.diff(t_col))  # assumes sorted time
         
         wAn = WAnalyzer(periods, dt, p_max=20)
@@ -186,7 +321,7 @@ class methods:
         return np.average(wAn.ridge_data['periods'], weights=wAn.ridge_data['power'])  # this is a pandas DataFrame holding the ridge results
     
     @staticmethod
-    def period_estimation(df, cols, t_col, method='None'):
+    def period_estimation(df, cols, t_col, method='None', min_period=18, max_period=36):
         if method == 'None':
             return 'No period estimation'
     
@@ -194,7 +329,7 @@ class methods:
             'Fast Fourier Transform (FFT)': lambda: df[cols].apply(lambda x: methods.fft_period(x, df[t_col].values)),
             'Lomb-Scargle Periodogram':    lambda: df[cols].apply(lambda x: methods.Lomb_Scargle(x, df[t_col].values)),
             'Autocorrelation':             lambda: df[cols].apply(lambda x: methods.period_correlation(x)),
-            'Wavelet Transform':           lambda: df[cols].apply(lambda x: methods.wavelet(x, df[t_col]))
+            'Wavelet Transform':           lambda: df[cols].apply(lambda x: methods.wavelet(x, df[t_col], min_period, max_period))
         }
     
         # Get the selected method and execute it if exists, otherwise return the original df[cols]
@@ -310,6 +445,28 @@ class methods:
                 if i % 2 == 0:  # Every other band
                     plt.axvspan(band_start, band_end, color=color, alpha=1, zorder=-10)
             return fig
+        
+    def plot_entrainment_ax(ax, plot, t_col, xtick_start, xtick_end, ent_days, order=0, T=24, color='#EBEBEB'):
+            
+                start_time = xtick_start
+                end_time = (start_time + T * ent_days) 
+                
+                # If Time is datetime, convert to numeric hours for easier spacing
+                if np.issubdtype(plot[t_col].dtype, np.datetime64):
+                    time_unit = 'datetime'
+                    total_seconds = (end_time - start_time).total_seconds()
+                    num_bands = int(total_seconds // (12 * 3600)) 
+                    delta = pd.Timedelta(hours=12)
+                else:
+                    time_unit = 'numeric'
+                    num_bands = int((end_time - start_time) // (T/2)) 
+                    delta = (T/2)
+                    
+                for i in range(num_bands):
+                    band_start = start_time + i * delta + T/2 * order
+                    band_end = band_start + delta 
+                    if i % 2 == 0:  # Every other band
+                        ax.axvspan(band_start, band_end, color=color, alpha=1, zorder=-10)
         
     def plot(df, t_col, p_col, t0, t1, bg_color='white', ent=False, ent_days=0, 
              order=0, T=24, color='white', unit='Measured unit'):

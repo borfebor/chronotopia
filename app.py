@@ -42,13 +42,21 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = "0.6"
+version = "0.6.1"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
-uploaded_file = st.sidebar.file_uploader('Upload your data',
+pop_upload = st.sidebar.popover('Upload your data', width='stretch')
+
+with pop_upload:
+    uploaded_file = st.file_uploader('Upload your data',
                         type=['csv','txt','xlsx', 'tsv'])
-example = st.sidebar.toggle('Check example dataset')
+
+ex_place = st.sidebar.empty()
+
+with ex_place:
+    #eg = st.expander('Example datasets', True)
+    example = st.toggle('Generate example dataset')
 
 if example:
     uploaded_file = 'hola'
@@ -75,27 +83,66 @@ if uploaded_file is not None:
         c1, c2 = st.columns(2)
     
     if uploaded_file == 'hola':
-        df = methods.example_data()
+        
+        with st.sidebar.popover('Example dataset parameters', width='stretch'):
+            eg1, eg2 = st.columns(2)
+            ex_days = eg1.number_input('Days generated', 1, 20, 7,  step=1)    
+            ex_datapoints = eg2.number_input('Timepoints per day', 4, 144, 12, step=1) 
+            ex_samples = eg1.number_input('Number of samples', 1, 96, 5,  step=1)   
+            ex_percent = eg2.number_input('Ratio of rhythmic (%)', 0, 100, 80,  step=1)/ 100
+            ex_period = eg1.number_input('Free running period', 2, 48, 24,  step=1)   
+            ex_ent_days = eg2.number_input('Entrainment days', 0, ex_days, 0,  step=1)  
+            ex_ent_period = eg1.number_input('Entrainment period', 2, 48, 24,  step=1) 
+            ex_waveform = eg2.selectbox('Waveform', ['sin', 'square', 'saw'], 0) 
+            if ex_ent_days > 0:
+                ex_entrain = True
+            else: 
+                ex_entrain = False
+        np.random.seed(42)
+        df, meta, time_hours = methods.generate_rhythm_dataset(
+            num_days=ex_days,
+            points_per_day=ex_datapoints,
+            n_samples=ex_samples,
+            percent_rhythmic=ex_percent,
+            period=ex_period,               # intrinsic period in hours (can be scalar or (min,max))
+            entrain=ex_entrain,
+            entrain_start_day=0,
+            entrain_end_day=ex_ent_days,
+            entrain_period=ex_ent_period,       # period of the entraining cycle in hours
+            noise_sd=np.random.randint(0,10)/10,
+            amp_range=(0.8, 1.2),
+            phase_jitter_sd=0.2,       # radians jitter when entrained
+            intrinsic_period_jitter=0.2, # hours sd to jitter each sample's intrinsic period
+            nonrhythm_drift=True,
+            random_seed=42,
+            waveform=ex_waveform             # 'sin' or 'square' or 'saw'
+        )
     else:
         df = methods.importer(uploaded_file)
+        ex_place.empty()
         
-    layout = st.sidebar.toggle('Include experimental layout', False)
+    layout = st.sidebar.popover('Upload experimental layout', width='stretch')
     
     df.columns = [col.strip() for col in df.columns]
     
-    t_col = st.sidebar.selectbox('Time column', [col for col in df.columns] )
+    col_t, col_unit = st.sidebar.columns(2)
+    t_col = col_t.selectbox('Time column', [col for col in df.columns] )
     
     times = df[t_col].value_counts()
     n_replicates = times.unique()
     delta_t = np.mean(np.diff(times.index))  # assumes sorted time
     
     t_options = ['Minutes', 'Hours', 'Days', 'Seconds']
-    if delta_t > 1:
-        default = t_options.index('Minutes')
-    else:
+    
+    if uploaded_file == 'hola':
         default = t_options.index('Hours')
+    else:
+        if delta_t > 1:
+            default = t_options.index('Minutes')
+        else:
+            default = t_options.index('Hours')
         
-    t_unit = st.sidebar.selectbox('Time unit', t_options, default)
+    t_unit = col_unit.selectbox('Time unit', t_options, default)
 
     data_cols = [col for col in df.columns if col != t_col]
     
@@ -107,22 +154,22 @@ if uploaded_file is not None:
         layout_df['name'] = layout_df.Sample
             
     layout_file = None
-    if layout == True:
-
-        st.sidebar.header('Experimental groups')
+    
+    with layout:
+        st.header('Experimental groups')
         template = pd.DataFrame(data_cols, columns=['Sample'])
         template['Condition'] = 'YOUR_CONDITION'
         
         csv = convert_for_download(template)
         
-        st.sidebar.download_button(label="Download layout template",
+        st.download_button(label="Download layout template",
                         data=csv,
                         file_name='sample_layout_template.txt',
                         mime='text/csv',
                         type='primary',
                         help='Here you can download your data',
-                        use_container_width=True,)
-        layout_file = st.sidebar.file_uploader('Upload your experimental layout',
+                        width='stretch',)
+        layout_file = st.file_uploader('Upload your experimental layout',
                                 type=['csv','txt','xlsx', 'tsv'])
         
         if layout_file is not None:
@@ -134,7 +181,6 @@ if uploaded_file is not None:
             name_dict = dict(zip(layout_df.Sample, layout_df.name))
             df = df.rename(columns=name_dict)
             data_cols = [col for col in df.columns if col != t_col]
-
     
     df[t_col] = df[t_col].apply(lambda x: methods.time_changer(x, t_unit))
     
@@ -149,10 +195,20 @@ if uploaded_file is not None:
     normalize_time = st.sidebar.toggle('Always start time from 0', True)
     #outfilter = st.sidebar.toggle('Filter outliers', False)
     ent = st.sidebar.toggle('Include entrainment data', False)
-    exclusion = st.sidebar.toggle('Select samples to exclude', False)
-    period_estimation = st.sidebar.selectbox('Period Estimation', ['Fast Fourier Transform (FFT)', 'Autocorrelation', 'Lomb-Scargle Periodogram', 'Wavelet Transform'], 2)
+    if ent == True:
+        ent_exclude = st.sidebar.toggle('Exclude entrainment from period estimation', True)
+    #exclusion = st.sidebar.toggle('Select samples to exclude', False)
+    exclusion = st.sidebar.popover('Exclude samples from data', width='stretch')
 
-    test_a_bit = st.sidebar.expander('Analysis Parameters')#st.sidebar.toggle('Rhythmicity analysis parameters', False)
+    period_methods = ['Fast Fourier Transform (FFT)', 'Lomb-Scargle Periodogram', 'Wavelet Transform']
+    
+    if df[t_col].size >= 30:
+        period_methods = period_methods + ['Autocorrelation']
+    
+    period_estimation = st.sidebar.selectbox('Period Estimation', period_methods, 1)
+    period_len_min, period_len_max = st.sidebar.slider("Period range", 1, 100, (24-8, 24+8), step=1)
+
+    test_a_bit = st.sidebar.popover('Rhythmicity Analysis Parameters',  width='stretch')#st.sidebar.toggle('Rhythmicity analysis parameters', False)
     
     if normalize_time == True:
         
@@ -160,20 +216,7 @@ if uploaded_file is not None:
     
     with settings:
     
-        exclusion_place = st.empty()
-    
-    method = 'meta2d'
-    thresh = 0.05
-    with test_a_bit:
-        t1, t2 = st.columns(2)
-        t_start_test = t1.number_input('Minimum time', int(df[t_col].min()), int(df[t_col].max()), int(df[t_col].min()),  step=1)    
-        t_end_test = t2.number_input('Last time', int(df[df[t_col] > t_start_test][t_col].min()), int(df[df[t_col] > t_start_test][t_col].max()), int(df[df[t_col] > t_start_test][t_col].max()), step=1) 
-        method = t1.selectbox('Testing method', ['meta2d', 'JTK', 'ARS', 'LS', ], 0)   
-        thresh = t2.selectbox('Significance threshold', [0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001], 0)   
-
-        
-    #else:
-    #    t_start_test, t_end_test = df[t_col].min(), df[t_col].max()  
+        exclusion_place = st.empty()  
         
     max_days = int(df[t_col].max() / 24) + 1
     
@@ -202,6 +245,7 @@ if uploaded_file is not None:
     df[data_cols] = methods.normalize(df, data_cols, norm_meth)
         
     if ent == True:
+                
         with settings:
             col1, col2, col3, col4 = st.columns(4)
             ent_days = col1.number_input('Entrainment cycles', 1, max_days, 1,  step=1) 
@@ -225,20 +269,18 @@ if uploaded_file is not None:
                 
                 order = parts.index(band_type)
         
-        entrain_data = df[df[t_col] <= df[t_col].min() + T * ent_days]
+        entrain_data = df[df[t_col] <= df[t_col].min() + T * ent_days].reset_index(drop=True)
         
         if np.mean(n_replicates) > 1:
             entrain_data = entrain_data.groupby(t_col).agg({col:('mean') for col in data_cols}).reset_index()
         phases = entrain_data[data_cols].apply(lambda x: methods.sine_phase(entrain_data[t_col], x))
 
     else:
-        T = 0
-        order = 0
-        ent_days = 0
+        T, order, ent_days = 0, 0, 0
             
-    if exclusion:
+    with exclusion:
         
-        ex_type, ex_cols = exclusion_place.columns([1,2])
+        ex_type, ex_cols = st.columns([1,2])
         if 'layout_df' in globals():
             ex_options = layout_df.columns
         else:
@@ -267,8 +309,19 @@ if uploaded_file is not None:
         if 'layout_df' in globals():
             #st.write(f"Excluded {exclusion_list} from {ex_col}")
             layout_df = layout_df[~layout_df['name'].isin(exclusion_list)]
-    
+
     df = df.dropna()
+    fr_data = df[df[t_col] >= df[t_col].min() + T * ent_days].reset_index(drop=True) if ent and ent_exclude else df.copy()
+             
+    method = 'meta2d'
+    thresh = 0.05
+        
+    with test_a_bit:
+            t1, t2 = st.columns(2)
+            t_start_test = t1.number_input('Minimum time', int(fr_data[t_col].min()), int(fr_data[t_col].max()), int(fr_data[t_col].min()),  step=1)    
+            t_end_test = t2.number_input('Last time', int(df[df[t_col] > t_start_test][t_col].min()), int(df[df[t_col] > t_start_test][t_col].max()), int(df[df[t_col] > t_start_test][t_col].max()), step=1) 
+            method = t1.selectbox('Testing method', ['meta2d', 'JTK', 'ARS', 'LS', ], 0)   
+            thresh = t2.selectbox('Significance threshold', [0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001], 0) 
         
     duration = np.round(df[t_col].max(),1)
     sum_pre.write(f"Experiment with {len(data_cols)} sample recorded for {duration} hours (recorded every = {delta_t:.1f} h)")
@@ -303,15 +356,22 @@ if uploaded_file is not None:
     short = df[[t_col] + data_cols[:5]].iloc[:5]
     
     if on:
-        preview.table(short)
+        preview.dataframe(short.set_index(t_col))
     
     pre_plot = st.empty()
 
     with viz_settings:
         
-        style = st.selectbox('Select style', ['white', 'ticks', 'whitegrid', 'darkgrid', 'dark'])
+        cus1, cus2, cus3 = st.columns(3)
+        style = cus1.selectbox('Select style', ['white', 'ticks', 'whitegrid', 'darkgrid', 'dark'])
+        context = cus2.selectbox('Select context', ['talk', 'paper', 'notebook', 'poster'], 2)        
+        palettes = list(sns.palettes.SEABORN_PALETTES.keys()) + [name for name in plt.colormaps()]
+        
+        palette = cus3.selectbox('Select context', palettes, palettes.index('colorblind'))
 
         sns.set_style(style)
+        sns.set_context(context)
+        sns.set_palette(palette)
         
         if bg_color == 'white':
             # Get the current style dictionary
@@ -320,27 +380,18 @@ if uploaded_file is not None:
             # Extract the background color of the axes
             bg_color = style_dict.get('axes.facecolor')
 
- 
+
         if plot_type == 'Lineplot':
             
             p_col = st.selectbox('Column to preview', data_cols)
             unit = st.text_input('Data unit', 'Measured unit')
-            per = methods.period_estimation(df, [p_col], t_col, method=period_estimation)
+            per = methods.period_estimation(fr_data, [p_col], t_col, method=period_estimation, 
+                                            min_period=period_len_min, max_period=period_len_max)
             per = np.round(per, 2)
 
             fig = methods.plot(df, t_col, p_col, t0, t1, bg_color=bg_color, ent=ent, 
                          ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
-            
-            if ent == True:
-                #peaks = methods.phase_calculation(entrain_data, t_col, p_col, T, delta_t)
-                t_mod = entrain_data[t_col] % 24
-                signal = entrain_data[p_col]
-                popt, _ = curve_fit(methods.sine_model, entrain_data[t_col], signal, p0=[1, 0, np.mean(signal)])
-
-                fitted_signal = methods.sine_model(entrain_data[t_col], *popt)
-                #sns.scatterplot(df.iloc[peaks], x=t_col, y=p_col)
-                plt.plot(entrain_data[t_col], fitted_signal, linestyle='--', color='k', alpha=0.8)
-            
+        
             plt.title(f"{p_col}. Period = {per.loc[p_col]} h ({period_estimation}-calculated).")
 
             pre_plot.pyplot(fig)
@@ -349,7 +400,6 @@ if uploaded_file is not None:
                 
             p_col = st.selectbox('Column to preview', conditions)
             unit = st.text_input('Data unit', 'Measured unit')
-            #pre_plot = st.empty()
             
             fig = methods.grouped_plot(df, t_col, t0, t1, group=p_col, layout=layout_df, bg_color=bg_color, ent=ent, 
                      ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
@@ -383,11 +433,36 @@ if uploaded_file is not None:
         elif plot_type == 'Phase plot':
             
             p_col = st.selectbox('Column to preview', data_cols)
+            unit = st.text_input('Data unit', 'Measured unit')
+
             peaks = phases.loc[p_col]
             
-            fig = plt.figure(figsize=(3,3))
-            ax = fig.add_subplot(111, polar=True)
-            methods.phase_plot(entrain_data, ax, peaks, pal=[bg_color, ent_color], order=order)
+            fig = plt.figure(figsize=(7, 3), layout='tight')
+            gs = fig.add_gridspec(1, 2, width_ratios=[2, 1])
+
+            ax = fig.add_subplot(gs[0, 0])              # normal Cartesian plot
+            ax2 = fig.add_subplot(gs[0, 1], polar=True) # polar plot
+
+            sns.lineplot(entrain_data, x=t_col, y=p_col, ax=ax)
+            
+            t_mod = entrain_data[t_col] % 24
+            signal = entrain_data[p_col]
+            popt, _ = curve_fit(methods.sine_model, entrain_data[t_col], signal, p0=[1, 0, np.mean(signal)])
+
+            fitted_signal = methods.sine_model(entrain_data[t_col], *popt)
+                #sns.scatterplot(df.iloc[peaks], x=t_col, y=p_col)
+            ax.plot(entrain_data[t_col], fitted_signal, linestyle='--', color='k', alpha=0.8)
+            xtick_start = (entrain_data[t_col].min() // 24) * 24          # floor to nearest lower multiple of 24
+            xtick_end = ((entrain_data[t_col].max()  // 24) + 1) * 24      # ceil to next multiple of 24
+            
+            methods.plot_entrainment_ax(ax, entrain_data, t_col, xtick_start, xtick_end,
+                                           ent_days, order=order, T=T, color=ent_color)
+
+            ax.set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
+            ax.set_ylabel(unit)
+            ax.set_xlabel('Time (h)')
+                
+            methods.phase_plot(entrain_data, ax2, peaks, pal=[bg_color, ent_color], order=order)
 
         elif plot_type == 'Wavelet Ridge':
             
@@ -421,7 +496,7 @@ if uploaded_file is not None:
 
             sns.kdeplot(rd, y='periods', fill=True, ax=axes['C'])
             axes['D'].plot(df[t_col], df[p_col])
-            plt.suptitle(f"{p_col} Estimated period: {np.round(np.average(rd.periods, weights=rd.power),2)} h")
+            plt.suptitle(f"{p_col} Estimated period: {np.average(rd.periods, weights=rd.power):.2f} h")
 
         elif plot_type == 'Correlation':
             
@@ -466,9 +541,7 @@ if uploaded_file is not None:
                 color_map = {group: color for group, color in zip(unique_groups, plt.cm.tab20.colors)}
 
             fig, ax = plt.subplots(figsize=(7, 7))
-            #plt.scatter(embedding[:, 0], embedding[:, 1])
-            #for i, label in enumerate(data_cols):
-            #    plt.text(embedding[i, 0], embedding[i, 1], label, ha='left', va='bottom')
+
             plotted_groups = set()
 
             for i, label in enumerate(data_cols):
@@ -495,7 +568,8 @@ if uploaded_file is not None:
       
     if 'unit' not in globals():
         unit = 'signal'   
-        
+     
+    
     pre_plot.pyplot(fig)
     # Convert to BytesIO for download
     buf = BytesIO()
@@ -508,20 +582,20 @@ if uploaded_file is not None:
         data=buf,
         file_name="my_plot.png",
         mime="image/png",
-        use_container_width=True,
+        width='stretch',
     )
     
     csv = convert_for_download(df)
     
     st.sidebar.header('Final steps')
 
-    analysis_button = st.sidebar.button('Run analysis', type='primary', use_container_width=True)
+    analysis_button = st.sidebar.button('Run analysis', type='primary', width='stretch')
     st.sidebar.download_button(label="Download clean data",
                     data=csv,
                     file_name='clean_data.txt',
                     mime='text/csv',
                     help='Here you can download your data',
-                    use_container_width=True,)
+                    width='stretch',)
     
 
     if analysis_button:
@@ -529,7 +603,8 @@ if uploaded_file is not None:
         with st.spinner("Running R script..."):
             st.toast('Calculating periods...!')
             
-            periods = methods.period_estimation(df, data_cols, t_col, method=period_estimation).rename('Period')
+            periods = methods.period_estimation(df, data_cols, t_col, method=period_estimation,
+                                                min_period=period_len_min, max_period=period_len_max).rename('Period')
             periods = np.round(periods, 2)
             
             # Transpose and set index
@@ -569,7 +644,7 @@ if uploaded_file is not None:
                                 mime='text/csv',
                                 type='primary',
                                 help='Here you can download your data',
-                                use_container_width=True,)
+                                width='stretch',)
             else:
                 st.toast('Report ready to download!', icon='🎉')
 
@@ -596,7 +671,7 @@ if uploaded_file is not None:
                                 mime='text/csv',
                                 type='primary',
                                 help='Here you can download your data',
-                                use_container_width=True,)
+                                width='stretch',)
                             
     if "result_df" in st.session_state:
         result_df = st.session_state["result_df"]
@@ -604,7 +679,7 @@ if uploaded_file is not None:
         if "layout_df" in globals():
 
             baloon = st.sidebar.button('Compare groups', 
-                                       use_container_width=True,)
+                                       width='stretch',)
             if baloon:
                 #st.balloons()
                 sum_stats = methods.multicomparison(result_df, layout_df, conditions, method, thresh)
@@ -617,9 +692,9 @@ if uploaded_file is not None:
     report_spot = st.sidebar.empty()
     report_button = report_spot.button(
                             label="📄 Prepare report",
-                            use_container_width=True
+                            width='stretch'
                         )
-    
+
     if report_button:
         
         with st.spinner("Preparing report..."):
@@ -627,50 +702,99 @@ if uploaded_file is not None:
 
                 figures = []
                 
-                if conditions != []:
-                    
-                    #for group in conditions:
+                if ent == True:      
                         
-                    if "result_df" in globals():
-                        if "layout_df" in globals():
-                                                        
-                            res = result_df.set_index('CycID')
-                            trans = layout_df.set_index('name')
-                            
-                            mix = pd.concat([res, trans], axis=1)
-                            
-                            per_col = 'Periods'
-                            
-                            fig, (ax1, ax2) = plt.subplots(1,2, figsize=(15, 7), layout='tight')
-                            
-                            for ax in (ax1, ax2):
+                        if 'layout_df' in globals():                             
+                                n_conditions = layout_df.Condition.unique()                              
+                        else:
+                                n_conditions = data_cols
                                 
-                                if ax == ax2:
-                                    plot = mix[mix.reject == True]
-                                    ax.set_title('Tested periodicity (only rhythmic samples)')
-
+                        N = len(n_conditions)  # number of experiments
+                        cols = math.ceil(math.sqrt(N))
+                        rows = math.ceil(N / cols)
+                        fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3),
+                                                         layout='tight', subplot_kw={'polar': True}  )
+                            
+                        if np.size(axes) > 1:
+                                axes = axes.flatten()  # Flatten to simplify indexing
+                                
+                        for n, condition in enumerate(n_conditions):
+                                if np.size(axes) > 1:
+                                        ax = axes[n]
                                 else:
-                                    plot = mix
-                                    ax.set_title('Tested periodicity (all samples)')
-                            
-                                sns.pointplot(plot, x='Condition', y=per_col, hue='Condition', ax=ax, capsize=0.2)
-                                sns.swarmplot(plot, x='Condition', y=per_col, hue='Condition',
-                                              legend=False, edgecolor='k', size=8, linewidth=1, ax=ax)
+                                        ax = axes
+                                if 'layout_df' in globals():
+                                    group = layout_df[layout_df.Condition == condition]['name'].to_list()   
+                                else:
+                                    group = condition
                                 
-                                ax.tick_params(axis='x', rotation=90)
-                                ax.set_ylabel('Period (h)')
-                                ax.set_ylim(18, 36)
-                                                                                        
-                            figures.append(fig)
+                                methods.phase_plot(phases, ax, phases.loc[group],
+                                                       pal=[bg_color, ent_color], order=order)
+                                ax.set_title(condition)
+                                
+                            # Hide unused axes
+                        for j in range(N, np.size(axes)):
+                                fig.delaxes(axes[j])
+                                
+                        plt.suptitle('Phase calculation', fontsize=20, weight='bold')
+                        figures.append(fig)
+                        
+                if "result_df" in globals():
+                                ##st.write(result_df)
+                                res = result_df.set_index('CycID')
+                                mix = res.copy()
+                                hue_unit = 'reject'
+                                rows = result_df.shape[0]
+        
+                                if 'layout_df' in globals():
+                                    trans = layout_df.set_index('name')
+                                    mix = pd.concat([res, trans], axis=1)
+                                    rows = mix.Condition.nunique()
+                                    hue_unit = 'Condition'
+                                
+                                per_col = 'Periods'
+                                                
+                                if 'layout_df' in globals():
+                                    fig, axes = plt.subplots(1, 2, figsize=(8, rows), layout='constrained')
+                                    
+                                    for n, ax in enumerate(axes):
+                                        plot_data = mix[mix.reject == True] if n == 1 else mix
+                                        title = 'Only rhythmic' if n == 1 else 'All samples'
+                                        
+                                        sns.pointplot(plot_data, y='Condition', x=per_col, hue=hue_unit, #linecolor='k',
+                                                  ax=ax, capsize=0.2).set(xlim=(period_len_min,
+                                                                        period_len_max))
+                                        sns.stripplot(plot_data, y='Condition', x=per_col,  hue=hue_unit, edgecolor='k', 
+                                                      linewidth=1, alpha=0.7, legend=False, ax=ax)
+
+                                        ax.set_ylabel('')
+                                        ax.set_title(title)
+                                    #ax2.set_ylabel('')
+                                else:
+                                    fig, axes = plt.subplots(1, 1, figsize=(4, rows / 2), layout='tight')
+        
+                                    sns.pointplot(mix, y=mix.index, x=per_col, join=False, hue=hue_unit,
+                                              markeredgecolor='k', markeredgewidth=1, alpha=0.7).set(xlim=(period_len_min,
+                                                                                                period_len_max),
+                                                                                                ylabel='')
+                                plt.suptitle(f'Period estimation ({period_estimation}-calculated)', fontsize=20, weight='bold')
+                                                                                            
+                                figures.append(fig)
+                
+                if conditions != []:
                             
-                            N = len(conditions)  # number of experiments
-                            cols = math.ceil(math.sqrt(N))
-                            rows = math.ceil(N / cols)
-                            fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3), layout='tight')
-                            axes = axes.flatten()  # Flatten to simplify indexing
+                    N = len(conditions)  # number of experiments
+                    cols = math.ceil(math.sqrt(N))
+                    rows = math.ceil(N / cols)
+                    fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3), layout='tight')
+                    if np.size(axes) > 1:
+                                axes = axes.flatten()  # Flatten to simplify indexing
                             
-                            for n, group in enumerate(conditions):
-                                ax = axes[n]
+                    for n, group in enumerate(conditions):
+                                if np.size(axes) > 1:
+                                    ax = axes[n]
+                                else:
+                                    ax = axes
                                 sorter = layout_df[layout_df.Condition == group]['name'].unique()
                                 sorted_result = result_df[result_df['CycID'].isin(sorter)]
                                 
@@ -678,11 +802,12 @@ if uploaded_file is not None:
                                 ax.set_title(group)
                                 
                             # Hide unused axes
-                            for j in range(N, len(axes)):
+                    for j in range(N, np.size(axes)):
                                 fig.delaxes(axes[j])
                               
-                            plt.legend(ncol=2)
-                            figures.append(fig)
+                    plt.legend(ncol=2)
+                    figures.append(fig)
+                            
                             
                     if "sum_stats" in globals():
                         
@@ -764,7 +889,7 @@ if uploaded_file is not None:
                                     ax.set_ylabel(cat)
    
                                     ax.set_xticklabels([d.group1, d.group2])
-                                    title= f"p-val: {np.round(d['p-val'], 4)}"
+                                    title= f"p-val: {d['p-val']:.4f}"
                                     ax.set_title(title)
                                     
                                 plt.suptitle(f"{cat} differences", fontsize=20, weight='bold')
@@ -802,47 +927,52 @@ if uploaded_file is not None:
                         cols = math.ceil(math.sqrt(N))
                         rows = math.ceil(N / cols)
                         fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3), layout='tight')
-                        axes = axes.flatten()  # Flatten to simplify indexing
+                        if np.size(axes) > 1:
+                                axes = axes.flatten()  # Flatten to simplify indexing
                                 
                         for n, subgroup in enumerate(names):
-                            ax = axes[n]
-                            ax.plot(df[t_col], df[subgroup])
-                            #ax = methods.multiplot(ax, df, t_col, group, t0, t1)
+                                 if np.size(axes) > 1:
+                                     ax = axes[n]
+                                 else:
+                                     ax = axes   
+                                 
+                                 ax.plot(df[t_col], df[subgroup])
                             
-                            if "result_df" in globals():
-                                focus = result_df[result_df['CycID'] == subgroup]
-
-                                cols = [col for col in focus.columns if method in col]
+                                 if "result_df" in globals():
+                                    focus = result_df[result_df['CycID'] == subgroup]
     
-                                per_col = 'Periods'
-                                q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
-                                q = np.round(focus[q_col].mean(), 5)
-                                reject = q <= thresh
-                                period = f"{np.round(focus[per_col].mean(),1)}"
-                                title = f"{subgroup}.\nPeriod: {period} h. q-value: {q} ({method} tested).\nReject: {reject} (Sig. thresh = {thresh})"
-                            else:
-                                title = subgroup
+                                    cols = [col for col in focus.columns if method in col]
+        
+                                    per_col = 'Periods'
+                                    q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
+                                    q = np.round(focus[q_col].mean(), 5)
+                                    reject = q <= thresh
+                                    period = f"{focus[per_col].mean():.1f}"
+                                    title = f"{subgroup}.\nPeriod: {period} h. q-value: {q} ({method} tested).\nReject: {reject} (Sig. thresh = {thresh})"
+                                 else:
+                                    title = subgroup
                                     
-                            ax.set_title(title)
-                            ax.set_xlabel('Time (h)')
-                            ax.set_ylabel(unit)
-                            # Get actual min and max from your data
-                            xmin = df[t_col].min()
-                            xmax = df[t_col].max()
+                                 ax.set_title(title)
+                                 ax.set_xlabel('Time (h)')
+                                 ax.set_ylabel(unit)
+                                # Get actual min and max from your data
+                                 xmin = df[t_col].min()
+                                 xmax = df[t_col].max()
                             
                             # Calculate start and end of xticks, rounded to nearest multiples of 24
-                            xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-                            xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-                            ax.set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
+                                 xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
+                                 xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
+                                 ax.set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
                                     
                         # Hide unused axes
-                        for j in range(N, len(axes)):
+                        for j in range(N, np.size(axes)):
                             fig.delaxes(axes[j])
                                   
                         plt.suptitle(group, weight='bold', fontsize=20)
                         figures.append(fig)
                 
                 if ent == True:
+                    
                     for col in data_cols:
                         
                         if "result_df" in globals():
@@ -853,7 +983,7 @@ if uploaded_file is not None:
                             q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
                             q = np.round(focus[q_col].mean(), 5)
                             reject = q <= thresh
-                            period = f"{np.round(focus[per_col].mean(),1)}"
+                            period = f"{focus[per_col].mean():.1f}"
                             title = f"{col}.\nPeriod: {period} h. q-value: {q} ({method} tested).\nReject: {reject} (Sig. thresh = {thresh})"
                         else:
                             title=None
@@ -863,6 +993,7 @@ if uploaded_file is not None:
                                                  bg_color=bg_color, band_color=ent_color,
                                                  order=order, T=T, title=title)
                         figures.append(fig)
+
                 else:
                     for col in data_cols:
                         if "result_df" in globals():
@@ -873,7 +1004,7 @@ if uploaded_file is not None:
                             q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
                             q = np.round(focus[q_col].mean(), 5)
                             reject = q <= thresh
-                            period = f"{np.round(focus[per_col].mean(),1)}"
+                            period = f"{focus[per_col].mean():.1f}"
                             title = f"{col}.\nPeriod: {period} h. q-value: {q} ({method} tested).\nReject: {reject} (Sig. thresh = {thresh})"
                         else:
                             title=None
@@ -889,7 +1020,7 @@ if uploaded_file is not None:
                         data=pdf_buffer,
                         file_name="rhythmicity_report.pdf",
                         mime="application/pdf",
-                        use_container_width=True
+                        width='stretch'
                     )
 
 
