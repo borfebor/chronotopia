@@ -490,7 +490,7 @@ class methods:
         xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
         xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
         
-        if ent == True:
+        if ent_days > 0:
             # Example for creating banded background every 12 hours
     
             fig = methods.plot_entrainment(fig, plot, t_col, xtick_start, xtick_end, ent_days, order=order, T=T, color=color)
@@ -519,7 +519,7 @@ class methods:
         xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
         xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
         
-        if ent == True:
+        if ent_days > 0:
             # Example for creating banded background every 12 hours
     
             methods.plot_entrainment(ax, plot, t_col, xtick_start, xtick_end, ent_days, order=order, T=T, color=color)
@@ -556,7 +556,7 @@ class methods:
         xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
         xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
         
-        if ent == True:
+        if ent_days > 0:
             # Example for creating banded background every 12 hours
     
             fig = methods.plot_entrainment(fig, plot, t_col, xtick_start, xtick_end, ent_days, order=order, T=T, color=color)
@@ -597,7 +597,7 @@ class methods:
         xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
         xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
         
-        if ent == True:
+        if ent_days > 0:
             # Example for creating banded background every 12 hours
             fig = methods.plot_entrainment(fig, plot, t_col, xtick_start, xtick_end, ent_days, order=order, T=T, color=color)
         
@@ -735,7 +735,7 @@ class methods:
             xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
             xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
             
-            if ent == True:
+            if ent_days > 0:
                 
                 start_time = xtick_start
                 end_time = (start_time + T * ent_days) 
@@ -803,7 +803,7 @@ class methods:
         xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
         xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
         
-        if ent == True:
+        if ent_days > 0:
             # Example for creating banded background every 12 hours
             ax = methods.plot_entrainment(ax, plot, t_col, xtick_start, xtick_end, ent_days, order=order, T=T, color=color)
         

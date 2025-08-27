@@ -42,7 +42,7 @@ def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
     
     
-version = "0.6.1"
+version = "0.6.2"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
@@ -191,13 +191,12 @@ if uploaded_file is not None:
     
     st.sidebar.header('Analysis paramenters')
     
-    hourly = st.sidebar.toggle('Smoothen the data', False)
-    normalize_time = st.sidebar.toggle('Always start time from 0', True)
-    #outfilter = st.sidebar.toggle('Filter outliers', False)
-    ent = st.sidebar.toggle('Include entrainment data', False)
-    if ent == True:
-        ent_exclude = st.sidebar.toggle('Exclude entrainment from period estimation', True)
-    #exclusion = st.sidebar.toggle('Select samples to exclude', False)
+    hourly = c1.toggle('Smoothen the data', False)
+    normalize_time = c2.toggle('Always start time from 0', True)
+
+    ent = st.sidebar.popover('Entrainment parameters', width='stretch')
+
+    ent_exclude = ent.toggle('Exclude entrainment from period estimation', True)
     exclusion = st.sidebar.popover('Exclude samples from data', width='stretch')
 
     period_methods = ['Fast Fourier Transform (FFT)', 'Lomb-Scargle Periodogram', 'Wavelet Transform']
@@ -244,24 +243,27 @@ if uploaded_file is not None:
     df[data_cols] = methods.detrend(df, data_cols, t_col, detrend_meth)
     df[data_cols] = methods.normalize(df, data_cols, norm_meth)
         
-    if ent == True:
+    with ent:
                 
-        with settings:
-            col1, col2, col3, col4 = st.columns(4)
-            ent_days = col1.number_input('Entrainment cycles', 1, max_days, 1,  step=1) 
-            T = col2.number_input('T cycle', 6, 48, 24,  step=1) 
-            cycle_type = col3.selectbox('Zeitgeber type', ['Darkness - Light', 'Light - Darkness', 'Cold - Warm', 'Warm - Cold', 'Custom'], 0) 
-            
-            if cycle_type == 'Custom':
+        #with settings:
+        col1, col2 = st.columns(2)
+        ent_days = col1.number_input('Entrainment cycles', 0, max_days, 0,  step=1) 
+        T = col2.number_input('T cycle', 6, 48, 24,  step=1) 
+        cycle_type = col1.selectbox('Zeitgeber type', ['Darkness - Light', 'Light - Darkness', 'Cold - Warm', 'Warm - Cold', 'Custom'], 0) 
+        ord_place = col2.empty()
+        
+    if ent_days > 0:
+        
+        if cycle_type == 'Custom':
                 color1, color2 = st.columns(2)
-                ent_color = color1.color_picker('Entrainment band', '#9BD1E5')
-                bg_color = color2.color_picker('Background color', '#ffffff')
-                order = col4.selectbox('Color order', [0, 1], 0)
-            else:
+                ent_color = col1.color_picker('Entrainment band', '#9BD1E5')
+                bg_color = col2.color_picker('Background color', '#ffffff')
+                order = ord_place.selectbox('Color order', [0, 1], 0)
+        else:
                 parts = [part.strip() for part in cycle_type.split("-")]
                 fr_options = [i for i in ['Light', 'Darkness', 'Cold', 'Warm'] if i in parts]
         
-                freerun_type = col4.selectbox('Free running conditions', fr_options, 1) 
+                freerun_type = ord_place.selectbox('Free running conditions', fr_options, 1) 
                 bg_color = backgroud[freerun_type]
                 #band_color = parts.remove(freerun_type)
                 band_type = [i for i in parts if i != freerun_type][0]
@@ -307,7 +309,6 @@ if uploaded_file is not None:
         data_cols =  [col for col in df.columns if col != t_col]
         
         if 'layout_df' in globals():
-            #st.write(f"Excluded {exclusion_list} from {ex_col}")
             layout_df = layout_df[~layout_df['name'].isin(exclusion_list)]
 
     df = df.dropna()
@@ -339,7 +340,7 @@ if uploaded_file is not None:
         
         visu = visu + ['Wavelet Ridge']
     
-    if ent == True:
+    if ent_days > 0:
         
         visu = visu + ['Phase plot']
     
@@ -380,7 +381,6 @@ if uploaded_file is not None:
             # Extract the background color of the axes
             bg_color = style_dict.get('axes.facecolor')
 
-
         if plot_type == 'Lineplot':
             
             p_col = st.selectbox('Column to preview', data_cols)
@@ -413,9 +413,7 @@ if uploaded_file is not None:
             #pre_plot = st.empty()
             
             fig = methods.grouped_plot_traces(df, t_col, t0, t1, group=p_col, layout=layout_df, bg_color=bg_color, ent=ent, 
-                     ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
-            #pre_plot.pyplot(fig)
-    
+                     ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)    
             
         elif plot_type == 'Actogram':
             p_col = st.selectbox('Column to preview', data_cols)
@@ -428,7 +426,6 @@ if uploaded_file is not None:
 
             fig = methods.double_plot(df_plot, t_col, p_col, ent_days, T, order, t0=t0, t1=t1, times=times, 
                                       bg_color=bg_color, band_color=ent_color)
-            #plt.suptitle(f"{p_col}. Period = {periods.loc[p_col]} h ({period_estimation}-calculated)")
             
         elif plot_type == 'Phase plot':
             
@@ -450,7 +447,6 @@ if uploaded_file is not None:
             popt, _ = curve_fit(methods.sine_model, entrain_data[t_col], signal, p0=[1, 0, np.mean(signal)])
 
             fitted_signal = methods.sine_model(entrain_data[t_col], *popt)
-                #sns.scatterplot(df.iloc[peaks], x=t_col, y=p_col)
             ax.plot(entrain_data[t_col], fitted_signal, linestyle='--', color='k', alpha=0.8)
             xtick_start = (entrain_data[t_col].min() // 24) * 24          # floor to nearest lower multiple of 24
             xtick_end = ((entrain_data[t_col].max()  // 24) + 1) * 24      # ceil to next multiple of 24
@@ -512,8 +508,6 @@ if uploaded_file is not None:
             dist_matrix = 1-ssd.pdist(np.stack(list_of_series), metric='correlation')
             dist_matrix = ssd.squareform(dist_matrix)
             
-            # Plot a heatmap
-            
             fig, ax = plt.subplots(figsize=(0.5*len(array), 0.5*len(array)))
             sns.heatmap(dist_matrix, cmap=p_col, square=True, annot=annot,
                         yticklabels=data_cols, xticklabels=data_cols, vmax=1, vmin=-1, center=0)
@@ -565,11 +559,9 @@ if uploaded_file is not None:
             plt.xlabel("Dimension 1")
             plt.ylabel("Dimension 2")
             
-      
     if 'unit' not in globals():
         unit = 'signal'   
      
-    
     pre_plot.pyplot(fig)
     # Convert to BytesIO for download
     buf = BytesIO()
@@ -597,7 +589,6 @@ if uploaded_file is not None:
                     help='Here you can download your data',
                     width='stretch',)
     
-
     if analysis_button:
         
         with st.spinner("Running R script..."):
@@ -702,7 +693,7 @@ if uploaded_file is not None:
 
                 figures = []
                 
-                if ent == True:      
+                if ent_days > 0:      
                         
                         if 'layout_df' in globals():                             
                                 n_conditions = layout_df.Condition.unique()                              
@@ -971,7 +962,7 @@ if uploaded_file is not None:
                         plt.suptitle(group, weight='bold', fontsize=20)
                         figures.append(fig)
                 
-                if ent == True:
+                if ent_days > 0:
                     
                     for col in data_cols:
                         
