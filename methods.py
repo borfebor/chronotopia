@@ -299,26 +299,43 @@ class methods:
         #print(f"Peak period (FFT): {peak_period}")
         return peak_period
     
-    def Lomb_Scargle(signal, t):
+    def Lomb_Scargle(signal, t, min_period, max_period):
         
-        frequency, power = LombScargle(t, signal).autopower(minimum_frequency=1/100,
-                                                                maximum_frequency=1/10)
+        frequency, power = LombScargle(t, signal).autopower(minimum_frequency=1/max_period,
+                                                                maximum_frequency=1/min_period)
         peak = np.argmax(power)
         peak_frequency = frequency[peak]
         peak_period = 1/peak_frequency
             
         return peak_period
     
-    def wavelet(signal, t_col, min_period, max_period):
+    def wavelet(data, t_col, min_period, max_period):
         periods = np.linspace(min_period, max_period, 100)
         dt = np.mean(np.diff(t_col))  # assumes sorted time
         
         wAn = WAnalyzer(periods, dt, p_max=20)
     
-        wAn.compute_spectrum(signal)
-    
-        wAn.get_maxRidge(power_thresh = 10, smoothing_wsize=20)
-        return np.average(wAn.ridge_data['periods'], weights=wAn.ridge_data['power'])  # this is a pandas DataFrame holding the ridge results
+        wAn.compute_spectrum(data)
+        
+        f, Pxx = signal.periodogram((data - data.mean()) / data.std(), 
+                                    fs=dt)
+        max_power = Pxx.max()
+        dominant_freq = f[Pxx.argmax()]
+        
+        suggested = int(1 / t_col.diff().mean() * 10) * 4
+        thresh = max_power * dominant_freq
+        st.write(thresh, suggested)
+        wAn.get_maxRidge(power_thresh = max_power * dominant_freq, 
+                         smoothing_wsize=suggested)
+        
+        if wAn.ridge_data['power'].sum() == 0:
+            return np.nan  # or some default
+        return np.average(
+            wAn.ridge_data['periods'],
+            weights=wAn.ridge_data['power']
+        )
+        #wAn.get_maxRidge(power_thresh = 10, smoothing_wsize=20)
+        #return np.average(wAn.ridge_data['periods'], weights=wAn.ridge_data['power'])  # this is a pandas DataFrame holding the ridge results
     
     @staticmethod
     def period_estimation(df, cols, t_col, method='None', min_period=18, max_period=36):
@@ -327,7 +344,7 @@ class methods:
     
         methods_map = {
             'Fast Fourier Transform (FFT)': lambda: df[cols].apply(lambda x: methods.fft_period(x, df[t_col].values)),
-            'Lomb-Scargle Periodogram':    lambda: df[cols].apply(lambda x: methods.Lomb_Scargle(x, df[t_col].values)),
+            'Lomb-Scargle Periodogram':    lambda: df[cols].apply(lambda x: methods.Lomb_Scargle(x, df[t_col].values, min_period, max_period)),
             'Autocorrelation':             lambda: df[cols].apply(lambda x: methods.period_correlation(x)),
             'Wavelet Transform':           lambda: df[cols].apply(lambda x: methods.wavelet(x, df[t_col], min_period, max_period))
         }
@@ -843,7 +860,7 @@ class methods:
         
         group = group.replace('_', '-')
         cols = [col for col in df.columns if method in col]
-        per_col = [col for col in cols if 'PERIOD' in col.upper()][0]
+        per_col = 'Periods'#[col for col in cols if 'PERIOD' in col.upper()][0]
         q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
         
         period = f"{np.round(df[per_col].mean(),1)} ± {np.round(df[per_col].std(),1)}"
