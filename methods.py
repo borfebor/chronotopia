@@ -323,8 +323,8 @@ class methods:
         dominant_freq = f[Pxx.argmax()]
         
         suggested = int(1 / t_col.diff().mean() * 10) * 4
-        thresh = max_power * dominant_freq
-        st.write(thresh, suggested)
+        #thresh = max_power * dominant_freq
+        #st.write(thresh, suggested)
         wAn.get_maxRidge(power_thresh = max_power * dominant_freq, 
                          smoothing_wsize=suggested)
         
