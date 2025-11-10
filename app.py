@@ -25,11 +25,6 @@ import os
 import math
 from pyboat import WAnalyzer
 
-from rpy2 import robjects
-from rpy2.robjects.packages import importr
-from rpy2.robjects.vectors import StrVector
-from rpy2.robjects import pandas2ri
-
 tab_logo = Image.open('tab_logo.png')
 
 st.set_page_config(
@@ -613,61 +608,55 @@ if uploaded_file is not None:
                 rdf = test_df[(test_df[t_col] >= t_start_test) & (test_df[t_col] <= t_end_test)].set_index(t_col).transpose().reset_index()
             
             #st.stop()
-            from rpy2.robjects.packages import importr
-            pandas2ri.activate()
-
-            # Import R packages
-            MetaCycle = importr("MetaCycle")
-            base = importr("base")
-            utils = importr("utils")
-            
-            rdf = test_df.set_index(t_col).transpose().reset_index()
-                        
-                        #st.stop()
             with tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode='w') as temp_file:
-                        rdf.to_csv(temp_file.name, sep="\t", index=False)
-                        input_path = temp_file.name
-                            
+                rdf.to_csv(temp_file.name, sep="\t", index=False)
+                input_path = temp_file.name
+                
             output_dir = tempfile.mkdtemp()
             
-            # Call the meta2d() function from MetaCycle
-            meta2dout = MetaCycle.meta2d(
-                infile=input_path,
-                filestyle="txt",
-                timepoints="line1",
-                cycMethod=StrVector(["JTK", "LS", "ARS"]),
-                minper=22,
-                maxper=32,
-                outputFile=False,
-                outdir=output_dir,
-                outIntegration="onlyIntegration"
+            st.toast('Testing rhythmicity...!')
+
+            result = subprocess.run(
+                ["Rscript", "run_meta2d.R", input_path, output_dir],
+                capture_output=True,
+                text=True
             )
             
-            # Convert the R data frame to a pandas DataFrame
-            r_df = meta2dout.rx2('meta')
+            st.text("STDOUT:\n" + result.stdout)
+            #st.text("STDERR:\n" + result.stderr)
             
-            result_df = pandas2ri.rpy2py(meta2dout.rx2('meta'))
-            #st.write(result_df.columns)
-
-            #col_sorter = [i for i in result_df.columns if 'meta.' in i]
-            #result_df = result_df[['CycID'] + col_sorter]
-            #result_df.columns = [i.replace('meta.', '') for i in result_df.columns]
-            result_df = result_df.set_index('CycID')
-            result_df['Periods'] = periods
-            result_df = result_df.reset_index()
+            if result.returncode != 0:
+                messages.error("R script failed.")
+                csv = convert_for_download(rdf)
                 
+                messages2.download_button(label="Download data for Metacycle testing",
+                                data=csv,
+                                file_name='data_for_metacycle.txt',
+                                mime='text/csv',
+                                type='primary',
+                                help='Here you can download your data',
+                                width='stretch',)
+            else:
+                st.toast('Report ready to download!', icon='🎉')
 
-            cols = [col for col in result_df.columns if method in col]
-
-            q_col = [col for col in cols if 'BH.Q' in col.upper()][0]  
+                result_df = pd.read_csv(os.path.join(output_dir, "meta2d_result.csv"))
+                col_sorter = [i for i in result_df.columns if 'meta.' in i]
+                result_df = result_df[col_sorter]
+                result_df.columns = [i.replace('meta.', '') for i in result_df.columns]
+                result_df = result_df.set_index('CycID')
+                result_df['Periods'] = periods
+                result_df = result_df.reset_index()
                 
-            result_df['reject'] = np.where(result_df[q_col] <= thresh, True, False)
-            messages.dataframe(result_df)
-            st.session_state["result_df"] = result_df  # Save in session state
-
-            csv = convert_for_download(result_df)
+                cols = [col for col in result_df.columns if method in col]
+                q_col = [col for col in cols if 'BH.Q' in col.upper()][0]  
                 
-            messages2.download_button(label="Download MetaCycle results",
+                result_df['reject'] = np.where(result_df[q_col] <= thresh, True, False)
+                messages.dataframe(result_df)
+                st.session_state["result_df"] = result_df  # Save in session state
+
+                csv = convert_for_download(result_df)
+                
+                messages2.download_button(label="Download MetaCycle results",
                                 data=csv,
                                 file_name='meta2d_results.txt',
                                 mime='text/csv',
