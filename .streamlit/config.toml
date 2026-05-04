@@ -1,0 +1,25 @@
+[theme.light]
+font = "Montserrat"
+showWidgetBorder = true
+primaryColor = "#0496FF"              # Purple-500 - modern, trendy color choice
+backgroundColor = "#ffffff"           # Pure white - clean, modern foundation
+secondaryBackgroundColor = "#fafafa"  # Neutral-50 - subtle modern gray
+textColor = "#2b2c37"                 # Zinc-900 - high contrast, modern
+
+borderColor = "#e4e4e7"               # Zinc-200 - clean, modern borders
+
+baseRadius = "1.5rem"                # Sharp, angular - very 80s
+showSidebarBorder = true
+
+[theme.dark]
+font = "Montserrat"
+showWidgetBorder = true
+primaryColor = "#9893DA"              # Purple-500 - modern, trendy color choice
+baseRadius = "1.5rem"                # Sharp, angular - very 80s
+showSidebarBorder = true
+
+[theme.dark.sidebar]
+secondaryBackgroundColor = "#2b2c37"  # Neutral-50 - subtle modern gray
+primaryColor = "#9893DA"              # Purple-500 - modern, trendy color choice
+textColor = "#fafafa"                 # Zinc-900 - high contrast, modern
+

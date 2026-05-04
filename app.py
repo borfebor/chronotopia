@@ -9,14 +9,17 @@ Created on Mon May  5 10:55:41 2025
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 import seaborn as sns
 import streamlit as st
 from methods import methods
 import scipy.spatial.distance as ssd
 from scipy.optimize import curve_fit
 from sklearn.manifold import MDS
+from datetime import datetime
 
 from io import BytesIO
+import base64
 
 from PIL import Image
 import subprocess
@@ -25,7 +28,15 @@ import os
 import math
 from pyboat import WAnalyzer
 
+from rpy2 import robjects
+from rpy2.robjects.packages import importr
+from rpy2.robjects.vectors import StrVector
+from rpy2.robjects import pandas2ri
+
+from ML_classifier.rhythmicity_feature_extractor import RhythmicityFeatureExtractor
+
 tab_logo = Image.open('tab_logo.png')
+today = datetime.today().strftime('%Y%m%d')
 
 st.set_page_config(
      page_title="Chronotopia",
@@ -35,44 +46,47 @@ st.set_page_config(
 )
 
 image = Image.open('logo.png')
-intro_image = Image.open('chrono_intro.png')
-st.sidebar.image(image)
+with st.sidebar.container(border=True):
+    st.image(image)
 
 def convert_for_download(df):
         return df.to_csv(sep='\t').encode("utf-8")
-    
-    
-version = "0.6.4"
+
+version = "0.7"
 st.sidebar.write(f"Version {version}")    
 st.sidebar.header('Data uploading')
 
-uploaded_file = st.sidebar.file_uploader('Upload your data', width='stretch', type=['csv','txt','xlsx', 'tsv'])
+up_site = st.sidebar.empty()
 
-#with pop_upload:
-#    uploaded_file = st.file_uploader('Upload your data',
-#                        type=['csv','txt','xlsx', 'tsv'])
+uploaded_file = up_site.file_uploader('Upload your data', width='stretch', 
+type=['csv','txt','xlsx', 'tsv'], key='my_file_uploader')
+
+#st.write(st.session_state)
 
 ex_place = st.sidebar.empty()
 
 with ex_place:
-    #eg = st.expander('Example datasets', True)
     example = st.toggle('Generate example dataset')
 
 if example:
     uploaded_file = 'hola'
 
 if uploaded_file is None:
-    st.image(intro_image) 
-
-    st.stop()
+    import landing
 
 if uploaded_file is not None:
     messages = st.empty()
     messages2 = st.empty()
     
+    reset = up_site.button(':material/upload_file: Upload new file', type='primary', width='stretch')
+
+    if reset:
+        del st.session_state["my_file_uploader"]
+        st.rerun()
+        
     st.header('Data Preview')
     sum_pre = st.empty()
-    on = st.toggle("Show data preview")
+    on = st.pills("Show data preview", ['Show data preview'], width='stretch', label_visibility='collapsed')
     preview = st.empty()
 
     st.header('Data Analysis')
@@ -80,12 +94,13 @@ if uploaded_file is not None:
     settings = st.expander('Data analysis settings (Filtering, Normalization, Detrending...)')  
     with settings:
 
-        c1, c2 = st.columns(2)
+        c1, c2 = st.columns(2, vertical_alignment="top")
     
     if uploaded_file == 'hola':
-        
+        file_name = 'Example data'
+        up_site.write(f"Dataset: {file_name}")
         with st.sidebar.popover('Example dataset parameters', width='stretch'):
-            eg1, eg2 = st.columns(2)
+            eg1, eg2 = st.columns(2, vertical_alignment="top")
             ex_days = eg1.number_input('Days generated', 1, 20, 7,  step=1)    
             ex_datapoints = eg2.number_input('Timepoints per day', 4, 144, 12, step=1) 
             ex_samples = eg1.number_input('Number of samples', 1, 96, 5,  step=1)   
@@ -119,13 +134,14 @@ if uploaded_file is not None:
         )
     else:
         df = methods.importer(uploaded_file)
-        ex_place.empty()
+        file_name = uploaded_file.name.split('.')[0]
+        ex_place.write(f"Dataset: {file_name}")
         
     layout = st.sidebar.popover('Upload experimental layout', width='stretch')
     
     df.columns = [col.strip() for col in df.columns]
     
-    col_t, col_unit = st.sidebar.columns(2)
+    col_t, col_unit = st.sidebar.columns(2, vertical_alignment="top")
     t_col = col_t.selectbox('Time column', [col for col in df.columns] )
     
     times = df[t_col].value_counts()
@@ -145,11 +161,33 @@ if uploaded_file is not None:
     t_unit = col_unit.selectbox('Time unit', t_options, default)
 
     data_cols = [col for col in df.columns if col != t_col]
-    
+
+    df[t_col] = df[t_col].apply(lambda x: methods.time_changer(x, t_unit))
+
     if len(data_cols) == 96:
+        import re
+    
+        def extract_col_id(name):
+            # Try last 2 chars as number first
+            try:
+                return f"COL_{int(name[-2:])}"
+            except ValueError:
+                pass
+            # Fall back to any trailing digits
+            m = re.search(r'(\d+)$', name)
+            if m:
+                return f"COL_{int(m.group(1))}"
+            # Last resort: use position-based grouping (8 rows × 12 cols)
+            return None
+
+        conditions = [extract_col_id(c) for c in data_cols]
+    
+        # If extraction failed for any column, fall back to position-based grouping
+        if None in conditions:
+            conditions = [f"COL_{(i % 12) + 1:02d}" for i in range(96)]
         
         template = pd.DataFrame(data_cols, columns=['Sample'])
-        template['Condition'] = [f"COL_{int(i[-2:])}" for i in data_cols]
+        template['Condition'] = conditions#[f"COL_{int(i[-2:])}" for i in data_cols]
         layout_df = template.copy()
         layout_df['name'] = layout_df.Sample
             
@@ -182,7 +220,6 @@ if uploaded_file is not None:
             df = df.rename(columns=name_dict)
             data_cols = [col for col in df.columns if col != t_col]
     
-    df[t_col] = df[t_col].apply(lambda x: methods.time_changer(x, t_unit))
     
     t_start = c1.number_input('Starting Timepoint', df[t_col].min(), df[t_col].max(), df[t_col].min())
     t_end =  c2.number_input('Last Timepoint', t_start, df[t_col].max(),df[t_col].max() )
@@ -191,8 +228,11 @@ if uploaded_file is not None:
     
     st.sidebar.header('Analysis paramenters')
     
-    hourly = c1.toggle('Smoothen the data', False)
-    normalize_time = c2.toggle('Always start time from 0', True)
+    #hourly = c1.toggle('Smoothen the data', False)
+    normalize_time = c1.toggle('Always start time from 0', True)
+
+    with settings:
+        col0, col1, col2 = st.columns(3, vertical_alignment="top")
 
     ent = st.sidebar.popover('Entrainment parameters', width='stretch')
 
@@ -204,11 +244,11 @@ if uploaded_file is not None:
     if df[t_col].size >= 30:
         period_methods = period_methods + ['Autocorrelation']
     
-    period_estimation = st.sidebar.selectbox('Period Estimation', period_methods, 1)
+    period_estimation = st.sidebar.selectbox('Period Estimation', period_methods, 2)
     period_len_min, period_len_max = st.sidebar.slider("Period range", 1, 100, (24-8, 24+8), step=1)
 
-    test_a_bit = st.sidebar.popover('Rhythmicity Analysis Parameters',  width='stretch')#st.sidebar.toggle('Rhythmicity analysis parameters', False)
-    
+    test_a_bit = st.sidebar.popover('Rhythmicity Analysis Parameters',  width='stretch')
+
     if normalize_time == True:
         
         df[t_col] = df[t_col] - df[t_col].min()
@@ -228,34 +268,79 @@ if uploaded_file is not None:
     bg_color = backgroud['None']
     ent_color = backgroud['None']
     
-    if hourly == True:
+    hourly = col0.selectbox('Smoothening', ['None', 'Mean', 'Resample', 'Butterworth filtering', 'DCT'])
+
+    if hourly != 'None':
         # Smooth with a 1-hour window
         samples_per_hour = int(round(1 / delta_t))
         if samples_per_hour < 1:
             samples_per_hour = 1
-        df[data_cols] = df[data_cols].rolling(window=samples_per_hour, center=True, min_periods=1).mean()
+        if hourly == 'Mean':
+            df[data_cols] = df[data_cols].rolling(window=samples_per_hour, center=True, min_periods=1).mean()
         df = df.dropna()
         #st.stop()
         
-    norm_meth = c1.selectbox('Normalization', ['None', 'Z-Score', 'Sample-wise Min-Max', 'Global Min-Max'])
-    detrend_meth = c2.selectbox('Detrending', ['None', 'Linear', 'Rolling mean', 'Hilbert + Rolling mean', 'Cubic'])
+    norm_meth = col1.selectbox('Normalization', ['None', 'Z-Score', 'Sample-wise Min-Max', 'Global Min-Max'])
+    detrend_meth = col2.selectbox('Detrending', ['None', 'Linear', 'Rolling mean', 'Hilbert + Rolling mean', 'Rolling Hilbert','Cubic'])
 
-    df[data_cols] = methods.detrend(df, data_cols, t_col, detrend_meth)
-    df[data_cols] = methods.normalize(df, data_cols, norm_meth)
-        
+    #df[data_cols] = methods.detrend(df, data_cols, t_col, detrend_meth)
+    #df[data_cols] = methods.normalize(df, data_cols, norm_meth)
+
+    if hourly == 'Butterworth filtering':
+            fs = 1 / delta_t
+            df[data_cols] = methods.apply_butter(df, data_cols, fs)
+
+    if hourly == 'DCT':
+        df[data_cols] = df[data_cols].apply(methods.dct_period_filter, dt=delta_t)
+
+    if hourly == 'Resample':
+        df = methods.resampling(df, t_col)
+
     with ent:
-                
-        #with settings:
-        col1, col2 = st.columns(2)
-        ent_days = col1.number_input('Entrainment cycles', 0, max_days, 0,  step=1) 
-        T = col2.number_input('T cycle', 6, 48, 24,  step=1) 
+        ent_mode = st.radio('Mode', ['manual', 'from data', 'upload'], width='stretch', horizontal=True)
+        ft_place = st.empty()
+        col1, col2 = st.columns(2, vertical_alignment="top")
+        ent_cutoff_time = None  # absolute time boundary — used for all modes
+
+        if ent_mode == 'from data':
+            entrainment_features = ft_place.selectbox('Select feature columns', data_cols)
+            entrainment_feat_data = df[[t_col]+[entrainment_features]]
+            df = df.drop(columns=entrainment_features)
+            ent_days, T, ent_cutoff_duration = methods.count_entrainment_days(entrainment_feat_data[entrainment_features], delta_t)
+            ent_cutoff_time = df[t_col].min() + ent_cutoff_duration
+
+            data_cols =  [col for col in df.columns if col != t_col]
+            st.write(f"Detected {ent_days} of {T} h")
+
+        elif ent_mode == 'upload':
+            entrainment_features = ft_place.file_uploader('Upload your entrainment data',
+                                type=['csv','txt','xlsx', 'tsv'])
+            if entrainment_features is not None:
+                entrainment_feat_data = methods.importer(entrainment_features)
+                ent_days, T, ent_cutoff_duration = methods.count_entrainment_days(entrainment_feat_data.iloc[:, -1], delta_t)
+                ent_cutoff_time = entrainment_feat_data.iloc[:, 0].min() + ent_cutoff_duration
+            else:
+                ent_days, T = 0, 24
+                entrainment_feat_data = None
+
+        else:
+            ent_days = 0
+            ent_days = col1.number_input('Entrainment cycles', 0, max_days, 0,  step=1) 
+            T = col2.number_input('T cycle', 6, 48, 24,  step=1) 
+            ratio = st.slider('Day length', 1, T, int(T/2), step=1) / T
+            entrainment_feat_data = methods.add_entrainment(df, t_col,
+                                                    n_days=ent_days,
+                                                    period=T,
+                                                    on_ratio=ratio,
+                                                    release=0)
+
         cycle_type = col1.selectbox('Zeitgeber type', ['Darkness - Light', 'Light - Darkness', 'Cold - Warm', 'Warm - Cold', 'Custom'], 0) 
         ord_place = col2.empty()
-        
+ 
     if ent_days > 0:
         
         if cycle_type == 'Custom':
-                color1, color2 = st.columns(2)
+                color1, color2 = st.columns(2, vertical_alignment="top")
                 ent_color = col1.color_picker('Entrainment band', '#9BD1E5')
                 bg_color = col2.color_picker('Background color', '#ffffff')
                 order = ord_place.selectbox('Color order', [0, 1], 0)
@@ -265,7 +350,6 @@ if uploaded_file is not None:
         
                 freerun_type = ord_place.selectbox('Free running conditions', fr_options, 1) 
                 bg_color = backgroud[freerun_type]
-                #band_color = parts.remove(freerun_type)
                 band_type = [i for i in parts if i != freerun_type][0]
                 ent_color = backgroud[band_type]
                 
@@ -275,14 +359,18 @@ if uploaded_file is not None:
         
         if np.mean(n_replicates) > 1:
             entrain_data = entrain_data.groupby(t_col).agg({col:('mean') for col in data_cols}).reset_index()
-        phases = entrain_data[data_cols].apply(lambda x: methods.sine_phase(entrain_data[t_col], x))
+        phases = entrain_data[data_cols].apply(
+            lambda x: methods.sine_phase(entrain_data[t_col], x))
 
     else:
-        T, order, ent_days = 0, 0, 0
-            
+            T, order, ent_days, entrainment_feat_data, ent_cutoff_time = 0, 0, 0, None, None
+
+    df[data_cols] = methods.detrend(df, data_cols, t_col, detrend_meth)
+    df[data_cols] = methods.normalize(df, data_cols, norm_meth) 
+         
     with exclusion:
         
-        ex_type, ex_cols = st.columns([1,2])
+        ex_type, ex_cols = st.columns([1,2], vertical_alignment="top")
         if 'layout_df' in globals():
             ex_options = layout_df.columns
         else:
@@ -312,23 +400,41 @@ if uploaded_file is not None:
             layout_df = layout_df[~layout_df['name'].isin(exclusion_list)]
 
     df = df.dropna()
+
     fr_data = df[df[t_col] >= df[t_col].min() + T * ent_days].reset_index(drop=True) if ent and ent_exclude else df.copy()
-             
     method = 'meta2d'
     thresh = 0.05
-        
+
+    model = {
+                'Tempo': {
+                    'model_path': 'ML_classifier/rhythmicity_classifier.pkl',
+                    'feature_names_path': 'ML_classifier/feature_names.pkl' , # Assumes default location,
+                    'metadata_path':'ML_classifier/model_metadata.pkl'
+                }
+            }
+
     with test_a_bit:
-            t1, t2 = st.columns(2)
+            load_model = st.selectbox('Rhythmicity evaluation model', model.keys(), 0)
+            t1, t2 = st.columns(2, vertical_alignment="top")
             t_start_test = t1.number_input('Minimum time', int(fr_data[t_col].min()), int(fr_data[t_col].max()), int(fr_data[t_col].min()),  step=1)    
             t_end_test = t2.number_input('Last time', int(df[df[t_col] > t_start_test][t_col].min()), int(df[df[t_col] > t_start_test][t_col].max()), int(df[df[t_col] > t_start_test][t_col].max()), step=1) 
-            method = t1.selectbox('Testing method', ['meta2d', 'JTK', 'ARS', 'LS', ], 0)   
+            method = t1.selectbox('Testing method', ['meta2d', 'JTK', 'ARS', 'LS', 'PermCosinor'], 0)   
             thresh = t2.selectbox('Significance threshold', [0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001], 0) 
+
+    from ML_classifier.ml_rhythmicity_classifier import MLRhythmicityClassifier
+
+    # Now always works the same way
+    selected = model[load_model]
+    classifier = MLRhythmicityClassifier(
+                model_path=selected['model_path'],
+                feature_names_path=selected['feature_names_path']
+            )
         
     duration = np.round(df[t_col].max(),1)
     sum_pre.write(f"Experiment with {len(data_cols)} sample recorded for {duration} hours (recorded every = {delta_t:.1f} h)")
     
     conditions = []
-    visu = ['Lineplot', 'Actogram', 'Correlation', 'PCA']
+    visu = ['Lineplot', 'Actogram', 'Multi-actogram', 'Feature extraction', 'Sample Insights', 'Rhythmicity Model Evaluation', 'PCA',  'Correlation', ]
     
     if 'layout_df' in globals():
         
@@ -348,11 +454,18 @@ if uploaded_file is not None:
 
     with viz_settings:
     
-        c, c1, c2 = st.columns([2, 1, 1])
+        c, c1, c2 = st.columns([2, 1, 1], vertical_alignment="top")
         t0 = c1.number_input('Starting time to plot', int(df[t_col].min()), int(df[t_col].max()), int(df[t_col].min()),  step=1)    
         t1 = c2.number_input('End time to plot', int(df[df[t_col] > t0][t_col].min()), int(df[df[t_col] > t0][t_col].max()), int(df[df[t_col] > t0][t_col].max()), step=1) 
         
-        plot_type = c.selectbox("Type of plot to visualize", visu)
+        # Initialize plot selection only on first run
+        if 'active_plot' not in st.session_state:
+            st.session_state['active_plot'] = 0
+        
+        plot_type = c.selectbox("Type of plot to visualize", visu, st.session_state['active_plot'])
+
+        # Persist the selection explicitly
+        st.session_state['active_plot'] = visu.index(plot_type)
 
     short = df[[t_col] + data_cols[:5]].iloc[:5]
     
@@ -363,8 +476,8 @@ if uploaded_file is not None:
 
     with viz_settings:
         
-        cus1, cus2, cus3 = st.columns(3)
-        style = cus1.selectbox('Select style', ['white', 'ticks', 'whitegrid', 'darkgrid', 'dark'])
+        cus1, cus2, cus3 = st.columns(3, vertical_alignment="top")
+        style = cus1.selectbox('Select style', ['white', 'ticks', 'whitegrid', 'darkgrid', 'dark'], 1)
         context = cus2.selectbox('Select context', ['talk', 'paper', 'notebook', 'poster'], 2)        
         palettes = list(sns.palettes.SEABORN_PALETTES.keys()) + [name for name in plt.colormaps()]
         
@@ -381,6 +494,7 @@ if uploaded_file is not None:
             # Extract the background color of the axes
             bg_color = style_dict.get('axes.facecolor')
 
+
         if plot_type == 'Lineplot':
             
             p_col = st.selectbox('Column to preview', data_cols)
@@ -388,14 +502,55 @@ if uploaded_file is not None:
             per = methods.period_estimation(fr_data, [p_col], t_col, method=period_estimation, 
                                             min_period=period_len_min, max_period=period_len_max)
             per = np.round(per, 2)
+            ft_col, clf_col = st.columns([2, 1])
+            ml_included = st.pills('Rhythmicity evaluation', ['None', f'{method}', 'ML'], default='None', width='stretch')
 
-            fig = methods.plot(df, t_col, p_col, t0, t1, bg_color=bg_color, ent=ent, 
+            fig = methods.plot(df, t_col, p_col, t0, t1, bg_color=bg_color, ent=ent, features=entrainment_feat_data,
                          ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
+
+            if ml_included == f"{method}":
+                if ml_included == 'PermCosinor':
+                    result = methods.detect_rhythmicity(
+                        df[t_col], df[p_col], signal_names=[p_col],
+                        n_permutations=500,   # increase to 5000+ for publication
+                        fdr_alpha=thresh,
+                    )
+                    st.write(result)
+                    #q_col = [c for c in result_cols if "BH.Q" in c.upper()]
+                    q_val = result[['q_ftest', 'q_perm']].mean().max()
+                    result['evaluation'] = np.where(result['reject'] == True,
+                    "Rhythmic",  "Arrhythmic")
+                else:
+                    result = methods.run_metacycle(df, t_col, [p_col], cyc_methods=[method] if method != 'meta2d' else ['JTK', 'ARS', 'LS'])
+                    result_cols = [c for c in result.columns if method in c]
+                    q_col = [c for c in result_cols if "BH.Q" in c.upper()]
+                    q_val = result[q_col[0]].squeeze()
+                    result['evaluation'] = np.where(result[q_col[0]] <= thresh,
+                    "Rhythmic",  "Arrhythmic")
+                
+                q_val = f"{q_val:.4f}" if q_val >= 0.0001 else "< 0.0001"
+                info_text = f"Classification: {result['evaluation'].values[0]}\nq-value: {q_val} (Threshold: {thresh})"
+                plt.annotate(info_text, xy=(0.98, 0.95), xycoords='axes fraction', 
+                    ha='right', va='top', 
+                    bbox=dict(boxstyle='round,pad=0.5', fc='white', ec='gray', alpha=0.8), fontsize=10) 
+
+            if ml_included == 'ML':
+                classification = classifier.predict(df[p_col], df[t_col])
+                info_text = (f"Classification: {'Rhythmic' if classification['is_rhythmic'] else 'Arrhythmic'}\n"
+                            f"Rhythmic Probability: {classification['probability_rhythmic']:.0%}"
+                            f" ({classification['confidence'].capitalize()} confidence)"
+                            )
+                            #f"Arrhythmic Probability: {classification['probability_arrhythmic']:.0%}")
+
+                plt.annotate(info_text, xy=(0.98, 0.95), xycoords='axes fraction', 
+                    ha='right', va='top', 
+                    bbox=dict(boxstyle='round,pad=0.5', fc='white', ec='gray', alpha=0.8), fontsize=10)
         
-            plt.title(f"{p_col}. Period = {per.loc[p_col]} h ({period_estimation}-calculated).")
+            plt.title(f"{p_col}. Period = {per.loc[p_col]} h ({period_estimation}-calculated).", loc='left')
 
             pre_plot.pyplot(fig)
-                
+            fig_name = f"{today}_{p_col}_{plot_type.replace(' ','_')}_{file_name}.svg"
+
         elif plot_type == 'Lineplot [Mean ± SD]':
                 
             p_col = st.selectbox('Column to preview', conditions)
@@ -405,7 +560,9 @@ if uploaded_file is not None:
                      ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
 
             pre_plot.pyplot(fig)
-            
+            fig_name = f"{today}_{p_col}_{plot_type.replace(' ','_')}_{file_name}.svg"
+
+
         elif plot_type == 'Lineplot [Mean + Replicates]':
                 
             p_col = st.selectbox('Column to preview', conditions)
@@ -414,19 +571,70 @@ if uploaded_file is not None:
             
             fig = methods.grouped_plot_traces(df, t_col, t0, t1, group=p_col, layout=layout_df, bg_color=bg_color, ent=ent, 
                      ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)    
-            
+            fig_name = f"{today}_{p_col}_{plot_type.replace(' ','_')}_{file_name}.svg"
+
         elif plot_type == 'Actogram':
             p_col = st.selectbox('Column to preview', data_cols)
-            times = st.number_input("Plot N times", 1, int(np.round(df[t_col].max() / 24)), 1)
+
+            cols = st.columns([4,1], vertical_alignment="top")
+            times = cols[0].number_input("Plot N times", 1, int(np.round(df[t_col].max() / 24)), 1)
+            color = cols[1].color_picker('Signal color', '#1F7A8C')
             #pre_plot = st.empty()
             if np.mean(n_replicates) > 1:
                 df_plot = df.groupby(t_col).agg({col:('mean') for col in data_cols}).reset_index()
             else:
                 df_plot = df.copy()
 
-            fig = methods.double_plot(df_plot, t_col, p_col, ent_days, T, order, t0=t0, t1=t1, times=times, 
-                                      bg_color=bg_color, band_color=ent_color)
-            
+            fig = methods.double_plot(df_plot, t_col, p_col, ent_days, T, order, t0=t0, t1=t1, times=times,
+                                     entrainment_data=entrainment_feat_data,
+                                      bg_color=bg_color, band_color=ent_color, signal_color=color)
+            fig_name = f"{today}_{p_col}_{plot_type.replace(' ','_')}_{file_name}.svg"
+
+        elif plot_type == 'Multi-actogram':
+
+            if 'layout_df' in globals():
+                conditions = list(layout_df.Condition.unique())
+                c_cols = st.selectbox('Choose the group to inspect',conditions)
+                d_cols = layout_df[layout_df.Condition == c_cols]['name'].to_list()
+                plot_cols = st.multiselect('Column to preview', data_cols, d_cols)
+                fig_name = f"{today}_{c_cols}_{plot_type.replace(' ','_')}_{file_name}.svg"
+
+            else:
+                plot_cols = st.multiselect('Column to preview', data_cols, data_cols[:2])
+                fig_name = f"{today}_{plot_type.replace(' ','_')}_{file_name}.svg"
+
+            cols = st.columns([2,2, 1,1], vertical_alignment="top")
+            times = cols[0].number_input("Plot N times", 1, int(np.round(df[t_col].max() / 24)), 1)
+            color = cols[3].color_picker('Signal color', '#1F7A8C')
+            per = methods.period_estimation(fr_data, plot_cols, t_col, method=period_estimation, 
+                                            min_period=period_len_min, max_period=period_len_max)
+            per = np.round(per, 2)
+            if np.mean(n_replicates) > 1:
+                df_plot = df.groupby(t_col).agg({col:('mean') for col in data_cols}).reset_index()
+            else:
+                df_plot = df.copy()
+
+            yscaling = st.checkbox('Re-scale Y axis by subset amplitude', False)
+
+            n_plots = len(plot_cols)
+            days = int(np.round(df[t_col].max() / 24))
+            plots_per_row = cols[1].number_input('Plots per row', 1, 6, 2)
+            hgt = int(np.round(n_plots)/plots_per_row)+1
+            suggested_h = int(np.round(days * 0.2 * n_plots/plots_per_row))+1
+            h = cols[2].number_input('Adjust height', suggested_h, suggested_h*4, suggested_h)
+            fig = plt.figure(figsize=(3*plots_per_row, h*2), layout='tight')
+            gs = fig.add_gridspec(hgt, plots_per_row)
+
+            for i, col in enumerate(plot_cols):
+            # Left panel → 10 stacked subplots
+                left_gs = gs[i].subgridspec(days, 1, hspace=0.05)
+                ax = [fig.add_subplot(left_gs[i]) for i in range(days)]
+                title = f"{col}\n(τ = {per.loc[col]} h)"
+                methods.multi_acto(ax, df_plot, t_col, plot_cols[i], ent_days, T, order, t0=t0, t1=t1, times=times, 
+                entrainment_data=entrainment_feat_data, yscaling=yscaling,
+                                      bg_color=bg_color, band_color=ent_color, signal_color=color, title=title)
+            fig.subplots_adjust(hspace=0)
+
         elif plot_type == 'Phase plot':
             
             p_col = st.selectbox('Column to preview', data_cols)
@@ -459,6 +667,8 @@ if uploaded_file is not None:
             ax.set_xlabel('Time (h)')
                 
             methods.phase_plot(entrain_data, ax2, peaks, pal=[bg_color, ent_color], order=order)
+            fig_name = f"{today}_{p_col}_{plot_type.replace(' ','_')}_{file_name}.svg"
+
 
         elif plot_type == 'Wavelet Ridge':
             
@@ -493,6 +703,7 @@ if uploaded_file is not None:
             sns.kdeplot(rd, y='periods', fill=True, ax=axes['C'])
             axes['D'].plot(df[t_col], df[p_col])
             plt.suptitle(f"{p_col} Estimated period: {np.average(rd.periods, weights=rd.power):.2f} h")
+            fig_name = f"{today}_{p_col}_{plot_type.replace(' ','_')}_{file_name}.svg"
 
         elif plot_type == 'Correlation':
             
@@ -514,66 +725,376 @@ if uploaded_file is not None:
             plt.title("Correlation Between Time Series")
             plt.xlabel("Samples")
             plt.ylabel("Samples")
-            
+            fig_name = f"{today}_{p_col}_{plot_type.replace(' ','_')}_{file_name}.svg"
+
         elif plot_type == 'PCA':
-            
-            list_of_series = [df[col].tolist() for col in data_cols]
-            annot = st.selectbox('Show annotation', [True, False], 1)
-            array = np.stack(list_of_series)
-            
-            # Pair-wise distance matrix (for instance, euclidean)
-            dist_matrix = 1-ssd.pdist(np.stack(list_of_series), metric='euclidean')
-            dist_matrix = ssd.squareform(dist_matrix)
 
-            mds = MDS(n_components=2, dissimilarity='precomputed')
-            embedding = mds.fit_transform(dist_matrix)
-            
-            if 'layout_df' in globals():
-            # Map group names to colors
-                groups = dict(zip(layout_df.name, layout_df.Condition))
-                unique_groups =  list(set(groups.values()))
-                color_map = {group: color for group, color in zip(unique_groups, plt.cm.tab20.colors)}
-
-            fig, ax = plt.subplots(figsize=(7, 7))
-
-            plotted_groups = set()
-
-            for i, label in enumerate(data_cols):
-                if 'layout_df' in globals():
-                    group = groups[label]
-                    color = color_map[group]
+            if "layout_df" in globals():
+                
+                options = ['All'] + [c for c in layout_df.Condition.unique()]
+                subsetting = st.selectbox('Choose condition', options)
+                if subsetting == 'All':
+                    selected_ids = data_cols
                 else:
-                    color = '#F97068'
-                    group = 'default'
-                    
-                show_label = group if group not in plotted_groups else "_nolegend_"  # avoid duplicates
-                plotted_groups.add(group)
-                ax.scatter(embedding[i, 0], embedding[i, 1], color=color, label=show_label, 
-                           linewidth=1, edgecolor='k', alpha=0.7, s=50)
-                if annot == True:
-                    ax.text(embedding[i, 0], embedding[i, 1], label.replace(group, ''), ha='left', va='bottom')
+                    selected_ids = layout_df[layout_df.Condition == subsetting]['name'].to_list()
 
-            ax.legend(title='Groups')
+            else:
+                selected_ids = data_cols
 
-            plt.title("Multidimensional Scaling of Time Series")
-            plt.xlabel("Dimension 1")
-            plt.ylabel("Dimension 2")
+            classification = df[selected_ids].apply(lambda x: classifier.predict(x, df[t_col]))
+            classification = classification.apply(pd.Series)
+
+            vlag_pal = sns.color_palette('vlag', 6)
+
+            pal = {"True low": "#95C6BA",
+            "True medium": "#6DB0A0",
+            "True high": "#539987",
+            "False low": "#D3889D",
+            "False medium": "#C25B78",
+            "False high": "#993955"}
+
+            rhythm_confidence = ["True high","True medium", "True low",
+            "False low", "False medium", "False high"]
+
+            validation = (
+                classification
+                .groupby(['is_rhythmic', 'confidence'])
+                .size()
+            )
+
+            validation.index = [f"{ir} {conf}" for ir, conf in validation.index]
+            values = {k: validation[k] for k in pal if k in validation}
+            pal = {k:vlag_pal[n] for n, k in enumerate(rhythm_confidence)}
+
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.decomposition import PCA
+
+            # ── PCA on the raw traces ─────────────────────────────────────────────────────
+            X = df[selected_ids].T                        # samples × timepoints
+            X_scaled = StandardScaler().fit_transform(X)
+
+            pca = PCA(n_components=2)
+            coords = pca.fit_transform(X_scaled)
+
+            pca_df = pd.DataFrame(coords, index=selected_ids, columns=['PC1', 'PC2'])
+            pca_df = pca_df.join(classification)          # attach is_rhythmic, confidence
+            pca_df['label'] = pca_df['is_rhythmic'].astype(str) + ' ' + pca_df['confidence']
+
+            # Attach condition from layout_df if available
+            if 'layout_df' in globals():
+                condition_map = layout_df.set_index('name')['Condition']
+                pca_df = pca_df.join(condition_map)
+                color_by = 'Condition'
+                conditions = pca_df['Condition'].unique()
+                cond_pal = dict(zip(conditions, sns.color_palette('tab10', len(conditions))))
+            else:
+                pca_df['Condition'] = 'All samples'
+                color_by = 'Condition'
+                cond_pal = {'All samples': 'steelblue'}
+
+            var1, var2 = pca.explained_variance_ratio_ * 100
+
+            # ── plot ──────────────────────────────────────────────────────────────────────
+            fig, ax = plt.subplots(figsize=(7, 6))
+
+            # Overlay marker shape to encode rhythmicity on top of condition colour
+            for (cond, rhythmic), sub in pca_df.groupby([color_by, 'is_rhythmic']):
+                marker = 'o' if str(rhythmic) == 'True' else 'X'
+                ax.scatter(
+                    sub['PC1'], sub['PC2'],
+                    color=cond_pal[cond],
+                    marker=marker,
+                    s=70, edgecolors='k', linewidths=0.4, alpha=0.85, zorder=3
+                )
+
+            # Sample ID annotations (optional — can be slow with many samples)
+            if len(selected_ids) <= 30:
+                for idx, row in pca_df.iterrows():
+                    ax.annotate(idx, (row['PC1'], row['PC2']),
+                                fontsize=7, alpha=0.6,
+                                xytext=(4, 4), textcoords='offset points')
+
+            ax.axhline(0, color='gray', linewidth=0.6, linestyle='--', zorder=0)
+            ax.axvline(0, color='gray', linewidth=0.6, linestyle='--', zorder=0)
+            ax.set_xlabel(f'PC1  ({var1:.1f}% variance)', fontsize=11)
+            ax.set_ylabel(f'PC2  ({var2:.1f}% variance)', fontsize=11)
+            ax.set_title('PCA — ML Classification', weight='bold', fontsize=13)
+            # Two-part legend: conditions (color) + rhythmicity (shape)
+            condition_handles = [
+                plt.scatter([], [], color=c, s=60, edgecolors='k', linewidths=0.4, label=g)
+                for g, c in cond_pal.items()
+            ]
+            shape_handles = [
+                plt.scatter([], [], marker='o', color='gray', s=60, edgecolors='k', linewidths=0.4, label='Rhythmic'),
+                plt.scatter([], [], marker='X', color='gray', s=60, edgecolors='k', linewidths=0.4, label='Arrhythmic'),
+            ]
+            leg1 = ax.legend(handles=condition_handles, title='Condition', title_fontsize=10,
+                            bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9, frameon=False)
+            ax.add_artist(leg1)
+            ax.legend(handles=shape_handles, title='Rhythmicity', title_fontsize=10,
+                    bbox_to_anchor=(1.02, 0.4), loc='upper left', fontsize=9, frameon=False)
+            plt.tight_layout()
+            fig_name = f"{today}_{plot_type.replace(' ','_')}_{file_name}.svg"
+
+        elif plot_type == 'Rhythmicity Model Evaluation':
+
+            if "layout_df" in globals():
+                
+                options = ['All'] + [c for c in layout_df.Condition.unique()]
+                subsetting = st.selectbox('Choose condition', options)
+                if subsetting == 'All':
+                    selected_ids = data_cols
+                else:
+                    selected_ids = layout_df[layout_df.Condition == subsetting]['name'].to_list()
+
+            else:
+                selected_ids = data_cols
+
+            classification = df[selected_ids].apply(lambda x: classifier.predict(x, df[t_col]))
+            classification = classification.apply(pd.Series)
+
+            vlag_pal = sns.color_palette('vlag', 6)
+
+            pal = {"True low": "#95C6BA",
+            "True medium": "#6DB0A0",
+            "True high": "#539987",
+            "False low": "#D3889D",
+            "False medium": "#C25B78",
+            "False high": "#993955"}
+
+            rhythm_confidence = ["True high","True medium", "True low",
+            "False low", "False medium", "False high"]
+
+            validation = (
+                classification
+                .groupby(['is_rhythmic', 'confidence'])
+                .size()
+            )
+
+            validation.index = [f"{ir} {conf}" for ir, conf in validation.index]
+            values = {k: validation[k] for k in pal if k in validation}
+            pal = {k:vlag_pal[n] for n, k in enumerate(rhythm_confidence)}
+
+            show_periods = st.checkbox('Show period estimation', value=False)
+
+            # ── period estimation ─────────────────────────────────────────────────────────
+            if show_periods:
+                periods = methods.period_estimation(
+                    fr_data, selected_ids, t_col,
+                    method=period_estimation,
+                    min_period=period_len_min,
+                    max_period=period_len_max
+                ).rename('Period')
+                
+                # Attach to classification so we can colour by rhythmicity
+                classification = classification.join(periods)
+
+            # ── confidence buckets ──────────────────────────────────────────────────────
+            high   = classification[classification.probability_rhythmic > 0.70].index.tolist()
+            medium = classification[(classification.probability_rhythmic.between(0.3, 0.70))].index.tolist()
+            low    = classification[classification.probability_rhythmic < 0.3].index.tolist()
+
+            # split by rhythmic/arrhythmic for colour
+            is_rhythmic = classification.is_rhythmic.astype(str)
+
+            n_trace_cols = 2 if show_periods else 1
+            fig = plt.figure(figsize=(14 + (5 if show_periods else 0), 8))
+            gs  = fig.add_gridspec(
+                3, 2 + (1 if show_periods else 0),
+                width_ratios=(1, 2, 1.2) if show_periods else (1, 2),
+                hspace=0.5, wspace=0.35
+            )
+
+            ax_pie    = fig.add_subplot(gs[:, 0])
+            ax_high   = fig.add_subplot(gs[0, 1])
+            ax_medium = fig.add_subplot(gs[1, 1])
+            ax_low    = fig.add_subplot(gs[2, 1])
+
+            # ── pie chart ────────────────────────────────────────────────────────────────
+            ax_pie.pie(
+                values.values(),
+                labels=[f"{k} (n={v})" for k, v in values.items()],
+                colors=[pal[k] for k in values],
+                autopct='%1.1f%%',
+                startangle=90,
+                wedgeprops=dict(width=0.6),                # donut style, easier to read
+            )
+            ax_pie.set_title('Rhythmicity Summary', weight='bold')
+
+            # ── trace panels ─────────────────────────────────────────────────────────────
+            trace_panels = [
+                (ax_high,   high,   'High probability  (≥ 0.70)'),
+                (ax_medium, medium, 'Medium probability  (0.35 – 0.70)'),
+                (ax_low,    low,    'Low probability  (< 0.35)'),
+            ]
+
+            for ax, ids, panel_title in trace_panels:
+                if ids:
+                    for col in ids:
+                        color = pal[f"{is_rhythmic[col]} {classification.loc[col, 'confidence']}"]
+                        ax.plot(df[t_col], df[col], color=color, alpha=0.6, linewidth=0.9)
+                else:
+                    ax.text(0.5, 0.5, 'No samples', transform=ax.transAxes,
+                            ha='center', va='center', color='gray')
+
+                ax.set_title(panel_title, fontsize=10, weight='bold')
+                ax.set_xlabel('Time (h)')
+                #ax.set_ylabel(unit)
+                ax.set_xticks([i for i in range(
+                    int((df[t_col].min() // 24) * 24),
+                    int(((df[t_col].max() // 24) + 1) * 24),
+                    24
+                )])
+
+            if show_periods:
+
+                ax_per = fig.add_subplot(gs[:, 2])
+
+                period_data = classification.dropna(subset=['Period'])
+                
+                # Sort for a cleaner strip plot feel
+                for i, (idx, row) in enumerate(period_data.sort_values('Period').iterrows()):
+                    color = pal[f"{row.is_rhythmic} {row.confidence}"]
+                    ax_per.scatter(row['Period'], i, color=color, s=60, zorder=3)
+
+                # Median line per rhythmicity group
+                for label, grp in period_data.groupby('is_rhythmic'):
+                    ax_per.axvline(
+                        grp['Period'].median(),
+                        linestyle='--', linewidth=1.2,
+                        color='#539987' if str(label) == 'True' else '#993955',
+                        label=f"Median ({'rhythmic' if str(label) == 'True' else 'arrhythmic'})"
+                    )
+
+                ax_per.set_xlim(period_len_min, period_len_max)
+                ax_per.set_xlabel('Period (h)')
+                ax_per.set_yticks([])
+                ax_per.set_title('Period Estimation', weight='bold', fontsize=10)
+                ax_per.legend(fontsize=8, loc='lower right')
+                ax_per.axvline(24, color='gray', linewidth=0.8, linestyle=':', zorder=0)  # 24h reference
+
+            plt.suptitle(f'ML Classification — {subsetting if "layout_df" in globals() else "All samples"}',
+                        weight='bold', fontsize=13)
+
+            fig_name = f"{today}_{plot_type.replace(' ','_')}_{file_name}.svg"
+    
+        elif plot_type == 'Feature extraction':
+
+            from chronotopia_feature_extractor import ChronotopiaFeatureExtractor
+
+            features_df = ChronotopiaFeatureExtractor.extract_batch(
+                    df, t_col=t_col, data_cols=data_cols
+            )
+
+            dispatch = { 
+                            "Cosinor Analysis": {'feature': "cosinor", 'info': "Classical least-squares cosinor fit. MESOR, acrophase amplitude, R², p-value, residuals."},  
+                            "Waveform": {'feature': "waveform", 'info': "Per-peak rise/fall time, FWHM, asymmetry index, cycle-to-cycle amplitude and period variance."}, 
+                            "Cycles": {'feature': "cycles", 'info': "Event-based: peak/trough detection, inter-cycle intervals, complete cycle count, peak prominence statistics."}, 
+                            "Baseline": {'feature': "baseline", 'info': "Rolling mean drift, substrate-depletion proxy, ADF-style non-stationarity score, linear/quadratic trend metrics."}, 
+                            "Harmonic": {'feature': "harmonic", 'info': "FFT-based: fundamental power, harmonic power ratios (12 h, 8 h), secondary peak ratio, spectral complexity."}, 
+                            "Noise": {'feature': "noise", 'info':"Residual noise after cosinor fit, per-band SNR profile, noise floor, residual autocorrelation structure."}, 
+                            "Lomb-Scargle": {'feature': "lomb_scargle", 'info': "Lomb-Scargle periodogram metrics. Works on all lengths and handles irregular sampling."},
+                            "Wavelet Ridge": {'feature': "wavelet_ridge", 'info': "Instantaneous period/amplitude/phase from Wavelet Transform ridge. Long series only."}
+                        }
+
+            group_col, ft_col = st.columns([1, 1.5])
+            ft_group = group_col.selectbox('Choose feature to preview', dispatch.keys())
             
+            ft_options = [col for col in features_df.columns[1:] if dispatch[ft_group]['feature'] in col]
+            feature_col = ft_col.selectbox('Choose feature to preview', ft_options)
+            
+            st.info(dispatch[ft_group]['info'])
+            if 'layout_df' in globals():
+                lay_dict = dict(zip(layout_df['name'], layout_df['Condition']))
+                features_df['Condition'] = features_df['sample_id'].replace(lay_dict)
+
+            l = layout_df['Condition'].nunique()*0.4 if 'layout_df' in globals() else len(data_cols)*0.2
+            fig, ax = plt.subplots(figsize=(5, l))
+            sns.boxplot(features_df, 
+                        y='Condition' if 'layout_df' in globals() else "sample_id",
+                        x=feature_col,
+                        hue='Condition' if 'layout_df' in globals() else "sample_id", legend=False)
+            sns.stripplot(features_df, 
+                        y='Condition' if 'layout_df' in globals() else "sample_id",
+                        x=feature_col, alpha=0.8, edgecolor='k', linewidth=1, s=8,
+                        hue='Condition' if 'layout_df' in globals() else "sample_id", legend=False)
+
+            fig_name = f"{today}_{plot_type.replace(' ','_')}_{file_name}.svg"
+
+            stat_csv = convert_for_download(features_df)
+            st.download_button(label="Export features",
+                            data=stat_csv,
+                            file_name=f"{today}_{file_name}_features.txt",
+                            mime='text/csv',
+                            help='Here you can download the extracted features',
+                            width='stretch', type='primary')
+
+        elif plot_type == 'Sample Insights':
+
+            p_col = st.selectbox('Column to preview', data_cols)
+            unit = st.text_input('Data unit', 'Measured unit')
+            per = methods.period_estimation(fr_data, [p_col], t_col, method=period_estimation, 
+                                            min_period=period_len_min, max_period=period_len_max)
+            per = np.round(per, 2)
+
+            from chronotopia_feature_extractor import ChronotopiaFeatureExtractor
+
+            # Full extraction (all applicable packages)
+            ext = ChronotopiaFeatureExtractor(df[p_col], df[t_col], period_range=(18, 30))
+
+            # Selective extraction
+            dispatch = { 
+                "Cosinor Analysis": {'feature': "cosinor", 'plot': ext.plot_cosinor},  
+                "Waveform": {'feature': "waveform", 'plot': ext.plot_waveform}, 
+                "Cycles": {'feature': "cycles", 'plot':ext.plot_cycles}, 
+                "Baseline": {'feature': "baseline", 'plot':ext.plot_baseline}, 
+                "Harmonic": {'feature': "harmonic", 'plot':ext.plot_harmonic}, 
+                "Noise": {'feature': "noise", 'plot':ext.plot_noise}, 
+                "Lomb-Scargle": {'feature': "lomb_scargle", 'plot':ext.plot_lomb_scargle},
+                "Wavelet Ridge": {'feature': "wavelet_ridge", 'plot':ext.plot_wavelet_ridge}
+            }
+
+            ft_col, clf_col = st.columns([2, 1])
+
+            extracted_ft = ft_col.selectbox("Features package", dispatch.keys())
+            features = ext.extract(packages=[dispatch[extracted_ft]['feature']])
+            ml_included = clf_col.pills('Rhythmicity evaluation (ML)', ['Include', 'Exclude'], default='Exclude', width='stretch')
+            with st.expander(f'Show {extracted_ft} features'):
+                st.write(features)
+            # Visualisation — overlay a package on an existing matplotlib axis
+            fig, ax = plt.subplots(figsize=(10, 3))
+            ax.plot(df[t_col], df[p_col])
+            dispatch[extracted_ft]['plot'](ax)
+            if ml_included == 'Include':
+                classification = classifier.predict(df[p_col], df[t_col])
+                info_text = (f"Classification: {'Rhythmic' if classification['is_rhythmic'] else 'Arrhythmic'}\n"
+                            f"Rhythmic Probability: {classification['probability_rhythmic']:.0%}"
+                            f" ({classification['confidence'].capitalize()} confidence)"
+                            )
+                            #f"Arrhythmic Probability: {classification['probability_arrhythmic']:.0%}")
+
+                plt.annotate(info_text, xy=(0.98, 0.95), xycoords='axes fraction', 
+                    ha='right', va='top', 
+                    bbox=dict(boxstyle='round,pad=0.5', fc='white', ec='gray', alpha=0.8), fontsize=10)
+
+            fig_name = f"{today}_{plot_type.replace(' ','_')}_{file_name}.svg"
+
+
     if 'unit' not in globals():
         unit = 'signal'   
-     
+
+    #unit = unit if 'unit' not in globals() else "signal"
     pre_plot.pyplot(fig)
     # Convert to BytesIO for download
     buf = BytesIO()
-    fig.savefig(buf, format="png")
+    fig.savefig(buf, format="svg")
     buf.seek(0)
-    
     # Add download button
     st.download_button(
-        label="Download Plot as PNG",
+        label="Download Plot as SVG",
         data=buf,
-        file_name="my_plot.png",
-        mime="image/png",
+        file_name=fig_name,
+        mime="image/svg",
         width='stretch',
     )
     
@@ -584,88 +1105,108 @@ if uploaded_file is not None:
     analysis_button = st.sidebar.button('Run analysis', type='primary', width='stretch')
     st.sidebar.download_button(label="Download clean data",
                     data=csv,
-                    file_name='clean_data.txt',
+                    file_name=f"{today}_{file_name}_clean_data.txt",
                     mime='text/csv',
                     help='Here you can download your data',
                     width='stretch',)
     
     if analysis_button:
-        
+        step = 0
+        bar_text = "Working on the analysis"
+        my_bar = messages.progress(step, text=bar_text)
         with st.spinner("Running R script..."):
+            import time
+            start = time.time()
+
             st.toast('Calculating periods...!')
             
             periods = methods.period_estimation(df, data_cols, t_col, method=period_estimation,
                                                 min_period=period_len_min, max_period=period_len_max).rename('Period')
-            periods = np.round(periods, 2)
             
+            my_bar.progress(step + 25, text=bar_text)
+
+            classification = df[data_cols].apply(lambda x: classifier.predict(x, df[t_col]))
+            classification = classification.apply(pd.Series)
+            my_bar.progress(step + 50, text=bar_text)
             # Transpose and set index
-            df[t_col] = df[t_col].apply(lambda x: np.round(x,1))
-            test_df = df[np.isclose(df[t_col] % 1, 0)]
-            
-            if np.mean(n_replicates) > 1:
-                rdf = test_df.groupby(t_col).agg({col:('mean') for col in data_cols}).transpose()
-            else:
-                rdf = test_df[(test_df[t_col] >= t_start_test) & (test_df[t_col] <= t_end_test)].set_index(t_col).transpose().reset_index()
-            
-            #st.stop()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode='w') as temp_file:
-                rdf.to_csv(temp_file.name, sep="\t", index=False)
-                input_path = temp_file.name
-                
-            output_dir = tempfile.mkdtemp()
-            
-            st.toast('Testing rhythmicity...!')
+            test_df = df[df[t_col].between(t_start_test, t_end_test)]
+   
+            if method == 'PermCosinor':
 
-            result = subprocess.run(
-                ["Rscript", "run_meta2d.R", input_path, output_dir],
-                capture_output=True,
-                text=True
-            )
-            
-            st.text("STDOUT:\n" + result.stdout)
-            #st.text("STDERR:\n" + result.stderr)
-            
-            if result.returncode != 0:
-                messages.error("R script failed.")
-                csv = convert_for_download(rdf)
-                
-                messages2.download_button(label="Download data for Metacycle testing",
-                                data=csv,
-                                file_name='data_for_metacycle.txt',
-                                mime='text/csv',
-                                type='primary',
-                                help='Here you can download your data',
-                                width='stretch',)
-            else:
-                st.toast('Report ready to download!', icon='🎉')
+                def from_dataframe(df, time_col="time"):
+                    t = df[time_col].values
+                    signal_cols = [c for c in df.columns if c != time_col]
+                    data = df[signal_cols].values.T   # shape: (n_signals, n_timepoints)
+                    return t, data, signal_cols
 
-                result_df = pd.read_csv(os.path.join(output_dir, "meta2d_result.csv"))
-                col_sorter = [i for i in result_df.columns if 'meta.' in i]
-                result_df = result_df[col_sorter]
-                result_df.columns = [i.replace('meta.', '') for i in result_df.columns]
-                result_df = result_df.set_index('CycID')
-                result_df['Periods'] = periods
-                result_df = result_df.reset_index()
-                
+                t, data, signal_cols = from_dataframe(test_df, t_col)
+                result_df = methods.detect_rhythmicity(
+                    t       = t,          # 1D array in hours
+                    data    = data,        # shape: (n_genes, n_timepoints)
+                    signal_names = signal_cols,
+                    n_permutations = 5000,              # increase for publication
+                    fdr_alpha = thresh,
+                )
+                result_df['PermCosinorBH.Q'] = result_df[['q_ftest', 'q_perm']].mean(axis=1)
+            else:
+                result_df = methods.run_metacycle(
+                    test_df, t_col, data_cols,
+                    cyc_methods=["JTK", "LS", "ARS"],
+                    min_per=period_len_min,
+                    max_per=period_len_max,
+                    n_replicates=n_replicates
+                )
                 cols = [col for col in result_df.columns if method in col]
+
                 q_col = [col for col in cols if 'BH.Q' in col.upper()][0]  
                 
                 result_df['reject'] = np.where(result_df[q_col] <= thresh, True, False)
-                messages.dataframe(result_df)
-                st.session_state["result_df"] = result_df  # Save in session state
 
-                csv = convert_for_download(result_df)
+            my_bar.progress(step + 75, text=bar_text)
+          
+            result_df = result_df.set_index('CycID')
+            result_df['Periods'] = periods
+            #result_df = result_df.reset_index()    
+            #result_df = result_df.set_index('CycID')
+            result_df[classification.columns] = classification
+            
+            result_df = result_df.reset_index()
+
+            st.session_state["result_df"] = result_df  # Save in session state
+            st.session_state["tested_file"] = file_name
+
+            csv = convert_for_download(result_df.set_index('CycID'))
                 
-                messages2.download_button(label="Download MetaCycle results",
+            messages2.download_button(label="Download MetaCycle results",
                                 data=csv,
-                                file_name='meta2d_results.txt',
+                                file_name=f"{today}_{file_name}_stats.txt",
                                 mime='text/csv',
                                 type='primary',
                                 help='Here you can download your data',
                                 width='stretch',)
-                            
+            my_bar.progress(step + 100, text=bar_text)
+            messages.dataframe(result_df)
+            end = time.time()
+            elapsed = end-start
+            elapsed = f"{elapsed/60:.2f} min" if elapsed > 60 else f"{elapsed:.2f} s"
+            messages2.success(f"""Took {elapsed} to process {result_df.shape[0]} signals with {test_df.shape[0]} timepoints (deltatime = {delta_t} h ) """)
+
     if "result_df" in st.session_state:
         result_df = st.session_state["result_df"]
+        if st.session_state["tested_file"] != file_name:
+            messages.warning(
+    "⚠️ Cached results were found that do not match the currently loaded file. "
+    "This may cause errors or inconsistent analyses. "
+    "Please re-run the analysis for the current file to ensure compatibility."
+)
+        #export_stats = st.sidebar.button('Export analysis', type='primary', width='stretch')
+        stat_csv = convert_for_download(result_df)
+        st.sidebar.download_button(label="Export analysis results",
+                        data=stat_csv,
+                        file_name=f"{today}_{file_name}_stats.txt",
+                        mime='text/csv',
+                        help='Here you can download your rhythmicity analysis',
+                        width='stretch',)
         
         if "layout_df" in globals():
 
@@ -676,342 +1217,53 @@ if uploaded_file is not None:
                 sum_stats = methods.multicomparison(result_df, layout_df, conditions, method, thresh)
                 st.write(sum_stats)
                 st.session_state["sum_stats"] = sum_stats  # Save in session state
-    
+
     if "sum_stats" in st.session_state:
         sum_stats = st.session_state["sum_stats"]
             
     report_spot = st.sidebar.empty()
     report_button = report_spot.button(
-                            label="📄 Prepare report",
+                            label=":material/docs: Prepare report",
                             width='stretch'
                         )
 
     if report_button:
-        
-        with st.spinner("Preparing report..."):
-                st.toast('Preparing report...!')
-
-                figures = []
-                
-                if ent_days > 0:      
-                        
-                        if 'layout_df' in globals():                             
-                                n_conditions = layout_df.Condition.unique()                              
-                        else:
-                                n_conditions = data_cols
-                                
-                        N = len(n_conditions)  # number of experiments
-                        cols = math.ceil(math.sqrt(N))
-                        rows = math.ceil(N / cols)
-                        fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3),
-                                                         layout='tight', subplot_kw={'polar': True}  )
-                            
-                        if np.size(axes) > 1:
-                                axes = axes.flatten()  # Flatten to simplify indexing
-                                
-                        for n, condition in enumerate(n_conditions):
-                                if np.size(axes) > 1:
-                                        ax = axes[n]
-                                else:
-                                        ax = axes
-                                if 'layout_df' in globals():
-                                    group = layout_df[layout_df.Condition == condition]['name'].to_list()   
-                                else:
-                                    group = condition
-                                
-                                methods.phase_plot(phases, ax, phases.loc[group],
-                                                       pal=[bg_color, ent_color], order=order)
-                                ax.set_title(condition)
-                                
-                            # Hide unused axes
-                        for j in range(N, np.size(axes)):
-                                fig.delaxes(axes[j])
-                                
-                        plt.suptitle('Phase calculation', fontsize=20, weight='bold')
-                        figures.append(fig)
-                        
-                if "result_df" in globals():
-                                ##st.write(result_df)
-                                res = result_df.set_index('CycID')
-                                mix = res.copy()
-                                hue_unit = 'reject'
-                                rows = result_df.shape[0]
-        
-                                if 'layout_df' in globals():
-                                    trans = layout_df.set_index('name')
-                                    mix = pd.concat([res, trans], axis=1)
-                                    rows = mix.Condition.nunique()
-                                    hue_unit = 'Condition'
-                                
-                                per_col = 'Periods'
-                                                
-                                if 'layout_df' in globals():
-                                    fig, axes = plt.subplots(1, 2, figsize=(8, rows), layout='constrained')
-                                    
-                                    for n, ax in enumerate(axes):
-                                        plot_data = mix[mix.reject == True] if n == 1 else mix
-                                        title = 'Only rhythmic' if n == 1 else 'All samples'
-                                        
-                                        sns.pointplot(plot_data, y='Condition', x=per_col, hue=hue_unit, #linecolor='k',
-                                                  ax=ax, capsize=0.2).set(xlim=(period_len_min,
-                                                                        period_len_max))
-                                        sns.stripplot(plot_data, y='Condition', x=per_col,  hue=hue_unit, edgecolor='k', 
-                                                      linewidth=1, alpha=0.7, legend=False, ax=ax)
-
-                                        ax.set_ylabel('')
-                                        ax.set_title(title)
-                                    #ax2.set_ylabel('')
-                                else:
-                                    fig, axes = plt.subplots(1, 1, figsize=(4, rows / 2), layout='tight')
-        
-                                    sns.pointplot(mix, y=mix.index, x=per_col, join=False, hue=hue_unit,
-                                              markeredgecolor='k', markeredgewidth=1, alpha=0.7).set(xlim=(period_len_min,
-                                                                                                period_len_max),
-                                                                                                ylabel='')
-                                plt.suptitle(f'Period estimation ({period_estimation}-calculated)', fontsize=20, weight='bold')
-                                                                                            
-                                figures.append(fig)
-                
-                if conditions != []:
-                            
-                    N = len(conditions)  # number of experiments
-                    cols = math.ceil(math.sqrt(N))
-                    rows = math.ceil(N / cols)
-                    fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3), layout='tight')
-                    if np.size(axes) > 1:
-                                axes = axes.flatten()  # Flatten to simplify indexing
-                            
-                    for n, group in enumerate(conditions):
-                                if np.size(axes) > 1:
-                                    ax = axes[n]
-                                else:
-                                    ax = axes
-                                sorter = layout_df[layout_df.Condition == group]['name'].unique()
-                                sorted_result = result_df[result_df['CycID'].isin(sorter)]
-                                
-                                methods.pie_chart(ax, sorted_result, method=method, group=group, thresh=thresh)
-                                ax.set_title(group)
-                                
-                            # Hide unused axes
-                    for j in range(N, np.size(axes)):
-                                fig.delaxes(axes[j])
-                              
-                    plt.legend(ncol=2)
-                    figures.append(fig)
-                            
-                            
-                    if "sum_stats" in globals():
-                        
-                        columns = [col for col in result_df.columns if method in col]
-                        
-                        look_for = dict(zip(['Rhythmicity', 'Period', 'Amplitude'], ['BH.Q', 'PERIOD', 'AMP']))
-            
-                        for cat in sum_stats.tested.unique():
-                            
-                            sorted_stats = sum_stats[(sum_stats.tested == cat) & (sum_stats.reject == True)]
-
-                            look_col = [col for col in columns if look_for[cat] in col.upper()][0]
-                            
-                            if sorted_stats.shape[0] > 0:
-                                
-                                N = sorted_stats.shape[0] # number of experiments
-                                cols = math.ceil(math.sqrt(N))
-                                rows = math.ceil(N / cols)
-                                fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 5), layout='tight')
-                                
-                                if rows > 1:
-                                    axes = axes.flatten()  # Flatten to simplify indexing
-                                
-                                for n, d in sorted_stats.reset_index().iterrows():
-                                
-                                    # Get names for each group
-                                    names_group1 = layout_df.loc[layout_df.Condition == d.group1, 'name']
-                                    names_group2 = layout_df.loc[layout_df.Condition == d.group2, 'name']
-                                    
-                                    # Get values to plot
-                                    if cat == 'Rhythmicity':
-                                        
-                                        # Get values for each group
-                                        values_group1 = result_df.loc[result_df['CycID'].isin(names_group1), look_col].values
-                                        values_group2 = result_df.loc[result_df['CycID'].isin(names_group2), look_col].values
-                                        
-                                        # Count how many values are below the threshold
-                                        count_below_group1 = (values_group1 < thresh).sum() / len(values_group1)
-                                        count_below_group2 = (values_group2 < thresh).sum() / len(values_group2)
-                                        
-                                        # Data for bar plot
-                                        counts = [count_below_group1, count_below_group2]
-                                        labels = [d.group1, d.group2]
-                                        colors = ['#F97068', '#57C4E5']
-                                        
-                                        # Select correct axis
-                                        ax = axes[n] if np.size(axes) > 1 else axes
-                                        
-                                        # Create bar plot
-                                        bars = ax.bar(labels, counts, color=colors, width=0.8)
-
-                                    else:
-                                    
-                                        values_group1 = result_df.loc[result_df['CycID'].isin(names_group1), look_col].values
-                                        values_group2 = result_df.loc[result_df['CycID'].isin(names_group2), look_col].values
-                                        
-                                        # Prepare colors
-                                        colors = ['#F97068', '#57C4E5']
-                                        data_to_plot = [values_group1, values_group2]
-                                        
-                                        # Select correct axis
-                                        ax = axes[n] if np.size(axes) > 1 else axes
-                                        
-                                        # Create boxplot
-                                        bplot = ax.boxplot(data_to_plot, widths=0.8, patch_artist=True, showmeans=True)
-                                        
-                                        # Set colors and title
-                                        for patch, color in zip(bplot['boxes'], colors):
-                                            patch.set_facecolor(color)
-                                            
-                                        for mean in bplot['means']:
-                                            mean.set_color('k')
-                                            mean.set_linewidth(2)
-                                            
-                                        for median in bplot['medians']:
-                                            median.set_color('black')  # or any other color
-                                            median.set_linewidth(2)
-                                            
-                                    ax.set_ylabel(cat)
-   
-                                    ax.set_xticklabels([d.group1, d.group2])
-                                    title= f"p-val: {d['p-val']:.4f}"
-                                    ax.set_title(title)
-                                    
-                                plt.suptitle(f"{cat} differences", fontsize=20, weight='bold')
-                                figures.append(fig)
-
-                    #st.stop()
-                    for group in conditions:
-                        
-                        if "result_df" in globals():
-
-                            fig, ax = plt.subplots(2, figsize=(10, 7), height_ratios=(1, 2))
-                            methods.grouped_plot_traces_export(ax[1], df, t_col, t0, t1, group=group, layout=layout_df, bg_color=bg_color, ent=ent, 
-                                 ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
-                            
-                            sorter = layout_df[layout_df.Condition == group]['name'].unique()
-
-                            sorted_result = result_df[result_df['CycID'].isin(sorter)]
-                            if sorted_result.shape[0] == 0:
-                                st.error('Oops, it might be that the IDs from the groups and the analysis do not match. Just re-run the analysis making sure that the layout have the correct names.')
-                                st.stop()
-                            methods.text(ax[0], sorted_result, method=method, group=group, thresh=thresh)
-                            figures.append(fig)
-
-                        else:
-                            fig, ax = plt.subplots(1, figsize=(10, 4))
-                            methods.grouped_plot_traces_export(ax, df, t_col, t0, t1, group=group, layout=layout_df, bg_color=bg_color, ent=ent, 
-                                 ent_days=ent_days, order=order, T=T, color=ent_color, unit=unit)
-                        #methods.plot_table_on_ax(ax)
-                            figures.append(fig)
-                        
-                        sorter = layout_df[layout_df['Condition'] == group]
-                        names = sorter['name'].to_list()
-                        
-                        N = len(sorter)  # number of experiments
-                        cols = math.ceil(math.sqrt(N))
-                        rows = math.ceil(N / cols)
-                        fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 3), layout='tight')
-                        if np.size(axes) > 1:
-                                axes = axes.flatten()  # Flatten to simplify indexing
-                                
-                        for n, subgroup in enumerate(names):
-                                 if np.size(axes) > 1:
-                                     ax = axes[n]
-                                 else:
-                                     ax = axes   
-                                 
-                                 ax.plot(df[t_col], df[subgroup])
-                            
-                                 if "result_df" in globals():
-                                    focus = result_df[result_df['CycID'] == subgroup]
-    
-                                    cols = [col for col in focus.columns if method in col]
-        
-                                    per_col = 'Periods'
-                                    q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
-                                    q = np.round(focus[q_col].mean(), 5)
-                                    reject = q <= thresh
-                                    period = f"{focus[per_col].mean():.1f}"
-                                    title = f"{subgroup}.\nPeriod: {period} h. q-value: {q} ({method} tested).\nReject: {reject} (Sig. thresh = {thresh})"
-                                 else:
-                                    title = subgroup
-                                    
-                                 ax.set_title(title)
-                                 ax.set_xlabel('Time (h)')
-                                 ax.set_ylabel(unit)
-                                # Get actual min and max from your data
-                                 xmin = df[t_col].min()
-                                 xmax = df[t_col].max()
-                            
-                            # Calculate start and end of xticks, rounded to nearest multiples of 24
-                                 xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-                                 xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-                                 ax.set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
-                                    
-                        # Hide unused axes
-                        for j in range(N, np.size(axes)):
-                            fig.delaxes(axes[j])
-                                  
-                        plt.suptitle(group, weight='bold', fontsize=20)
-                        figures.append(fig)
-                
-                if ent_days > 0:
-                    
-                    for col in data_cols:
-                        
-                        if "result_df" in globals():
-                            focus = result_df[result_df['CycID'] == col]
-                            cols = [col for col in focus.columns if method in col]
-
-                            per_col = 'Periods'
-                            q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
-                            q = np.round(focus[q_col].mean(), 5)
-                            reject = q <= thresh
-                            period = f"{focus[per_col].mean():.1f}"
-                            title = f"{col}.\nPeriod: {period} h. q-value: {q} ({method} tested).\nReject: {reject} (Sig. thresh = {thresh})"
-                        else:
-                            title=None
-
-                        fig = methods.split_plot(df, t_col, col,
-                                                 ent=ent, ent_days = ent_days, unit=unit, 
-                                                 bg_color=bg_color, band_color=ent_color,
-                                                 order=order, T=T, title=title)
-                        figures.append(fig)
-
-                else:
-                    for col in data_cols:
-                        if "result_df" in globals():
-                            focus = result_df[result_df['CycID'] == col]
-                            cols = [col for col in focus.columns if method in col]
-
-                            per_col = 'Periods'
-                            q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
-                            q = np.round(focus[q_col].mean(), 5)
-                            reject = q <= thresh
-                            period = f"{focus[per_col].mean():.1f}"
-                            title = f"{col}.\nPeriod: {period} h. q-value: {q} ({method} tested).\nReject: {reject} (Sig. thresh = {thresh})"
-                        else:
-                            title=None
-                            
-                        fig = methods.simple_plot( df, t_col, col, title=title)
-                        figures.append(fig)
-                    
-                pdf_buffer = methods.easy_pdf_report(figures)
-                
-                st.toast('Report ready to download!', icon='🎉')
-                report_spot.download_button(
-                        label="↓ Download report",
+        from rhythmicity_report import RhythmicityReport
+        report = RhythmicityReport(
+            df=df,
+            t_col=t_col,
+            result_df=result_df if 'result_df' in globals() else None,
+            layout_df=layout_df if 'layout_df' in globals() else None,
+            phases=phases if 'phases' in globals() else None,
+            sum_stats=sum_stats if 'sum_stats' in globals() else None,
+            methods=methods,
+            method=method,
+            thresh=thresh,
+            ent=ent,
+            ent_days=ent_days,
+            ent_color=ent_color,
+            bg_color=bg_color,
+            unit=unit,
+            T=T,
+            order=order,
+            t0=t0,
+            t1=t1,
+            conditions=conditions,
+            data_cols=data_cols,
+            period_len_min=period_len_min,
+            period_len_max=period_len_max,
+            period_estimation=period_estimation,
+            file_name=file_name,
+        )
+        pdf_buffer = report.build().to_pdf()
+        st.toast('Report ready to download!', icon=':material/celebration:')
+        report_spot.download_button(
+                        label=":material/download: Download report",
                         data=pdf_buffer,
-                        file_name="rhythmicity_report.pdf",
+                        file_name=f"{today}_{file_name}_rhythmicity_report.pdf",
                         mime="application/pdf",
                         width='stretch'
                     )
+        
 
 
