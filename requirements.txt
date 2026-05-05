@@ -8,3 +8,4 @@ statsmodels
 pyboat
 astropy
 scikit-learn
+rpy2==3.5.1
