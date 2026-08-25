@@ -5,13 +5,14 @@ message: >-
   and state which version you used — the interface and the numerical defaults
   change between versions, and the changelog records what changed and when.
 type: software
-# TODO before publication: confirm the author list and affiliations, add ORCIDs,
-# and add `doi:` once the repository is archived (Zenodo will mint one from a
-# GitHub release). Add co-authors here in the order they should be cited.
+# TODO before archiving: add ORCIDs, and add `doi:` once the repository is
+# archived (Zenodo will mint one from a GitHub release). Add co-authors here in
+# the order they should be cited.
 authors:
   - given-names: Borja
     family-names: Ferrero-Bordera
-    email: borfebor@gmail.com
+    email: borja.ferrero@med.uni-muenchen.de
+    affiliation: "Ludwig-Maximilians-Universität München; John Innes Centre"
     # orcid: "https://orcid.org/XXXX-XXXX-XXXX-XXXX"
 repository-code: "https://github.com/borfebor/chronotopia"
 url: "https://borfebor.github.io/chronotopia/"
@@ -32,10 +33,10 @@ keywords:
   - rhythmicity
   - bioluminescence
   - transcriptomics
-# TODO: the repository has no LICENSE file yet. Add one, then set this to the
-# matching SPDX identifier (MIT and GPL-3.0-or-later are the usual choices for
-# academic tools; note that a dependency chain including rpy2 (GPL-2.0) may
-# constrain what you can pick for the distributed whole).
-# license: MIT
+# GPL-3.0-or-later is required rather than chosen: pyBOAT, which Chronotopia
+# imports at module level for its wavelet analysis, is GPL-3.0-or-later, so the
+# distributed combined work must be under compatible terms. rpy2 is
+# GPL-2.0-or-later and upgrades cleanly to v3.
+license: GPL-3.0-or-later
 version: 0.8.0
 date-released: "2026-08-25"

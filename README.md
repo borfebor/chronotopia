@@ -32,3 +32,15 @@ docker run -p 8501:8501 chronotopia
 Once the container is running, open the following link in your browser:
 [http://localhost:8501/](http://localhost:8501/)
 
+## Licence
+
+Chronotopia is free software under the
+[GNU General Public License v3 or later](LICENSE).
+
+This is required rather than chosen: Chronotopia uses
+[pyBOAT](https://github.com/tensionhead/pyBOAT) for its wavelet analysis, and
+pyBOAT is GPL-3.0-or-later, so the combined work must be distributed under
+compatible terms.
+
+Copyright (C) 2026 Borja Ferrero-Bordera, Ludwig-Maximilians-Universität
+München, and the John Innes Centre.
