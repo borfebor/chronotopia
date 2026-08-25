@@ -1,0 +1,91 @@
+/*
+  Chronotopia docs theme.
+
+  The accent colours are the first two slots of the app's own palette, so the
+  site and the figures it contains read as one thing. Both were checked against
+  the surface: #b34d00 is a darkened step of the palette's #d55e00, because the
+  palette slot itself is a *mark* colour and sits below the contrast floor for
+  text and links.
+*/
+
+:root {
+  --ct-orange: #d55e00;   /* palette slot 1 — marks only */
+  --ct-link:   #b34d00;   /* darkened step — text and links */
+  --ct-blue:   #2a78d6;   /* palette slot 3 */
+  --ct-sky:    #56b4e9;
+  --ct-amber:  #eda100;
+  --ct-violet: #4a3aa7;
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color:        #2b2c37;
+  --md-primary-fg-color--light: #2f4258;
+  --md-primary-fg-color--dark:  #101a24;
+  --md-accent-fg-color:         var(--ct-link);
+  --md-typeset-a-color:         var(--ct-link);
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color:        #16212d;
+  --md-accent-fg-color:         #ff8b3d;
+  --md-typeset-a-color:         #ff8b3d;
+}
+
+/* Figures are rendered on white. On the dark scheme they would otherwise sit in
+   a glaring rectangle, so give them a light card that reads as a plate. */
+[data-md-color-scheme="slate"] .md-typeset img[src*="/figures/"] {
+  background: #ffffff;
+  border-radius: 4px;
+  padding: 0.4rem;
+}
+
+.md-typeset img[src*="/figures/"] {
+  display: block;
+  margin: 0 auto;
+  max-width: 100%;
+}
+
+/* Figure captions: the paragraph immediately after an image-only paragraph. */
+.md-typeset figure figcaption,
+.md-typeset .figure-caption {
+  font-size: 0.72rem;
+  color: var(--md-default-fg-color--light);
+  text-align: left;
+  margin-top: -0.6rem;
+  padding-bottom: 0.8rem;
+  line-height: 1.5;
+}
+
+/* Tables of numbers: right-align everything but the first column. */
+.md-typeset table:not([class]) td:not(:first-child),
+.md-typeset table:not([class]) th:not(:first-child) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A row of dataset download buttons. */
+.ct-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.8rem 0 1.2rem;
+}
+
+.ct-downloads a {
+  display: inline-block;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  text-decoration: none;
+}
+
+.ct-downloads a:hover {
+  border-color: var(--md-accent-fg-color);
+}
+
+/* Key-takeaway list at the end of a tutorial. */
+.md-typeset .ct-takeaway {
+  border-left: 3px solid var(--ct-orange);
+  padding-left: 1rem;
+}
