@@ -1,0 +1,41 @@
+cff-version: 1.2.0
+title: "Chronotopia: analysis of time-course data for circadian biology"
+message: >-
+  If you use this software, please cite it using the metadata from this file,
+  and state which version you used — the interface and the numerical defaults
+  change between versions, and the changelog records what changed and when.
+type: software
+# TODO before publication: confirm the author list and affiliations, add ORCIDs,
+# and add `doi:` once the repository is archived (Zenodo will mint one from a
+# GitHub release). Add co-authors here in the order they should be cited.
+authors:
+  - given-names: Borja
+    family-names: Ferrero-Bordera
+    email: borfebor@gmail.com
+    # orcid: "https://orcid.org/XXXX-XXXX-XXXX-XXXX"
+repository-code: "https://github.com/borfebor/chronotopia"
+url: "https://borfebor.github.io/chronotopia/"
+abstract: >-
+  Chronotopia is a browser-based application for analysing circadian
+  time-course data. It covers preprocessing (smoothing, normalisation,
+  detrending, entrainment handling), period estimation by Lomb-Scargle,
+  wavelet transform, FFT, autocorrelation and a cosinor sweep, rhythmicity
+  testing via MetaCycle and permutation cosinor, extraction of around one
+  hundred features per sample, plate-format analysis for 6 to 384-well
+  layouts, and publication-ready figures and reports. It is designed to work
+  on both short omics timecourses and long reporter recordings.
+keywords:
+  - circadian rhythms
+  - chronobiology
+  - time series analysis
+  - period estimation
+  - rhythmicity
+  - bioluminescence
+  - transcriptomics
+# TODO: the repository has no LICENSE file yet. Add one, then set this to the
+# matching SPDX identifier (MIT and GPL-3.0-or-later are the usual choices for
+# academic tools; note that a dependency chain including rpy2 (GPL-2.0) may
+# constrain what you can pick for the distributed whole).
+# license: MIT
+version: 0.8.0
+date-released: "2026-08-25"

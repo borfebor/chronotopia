@@ -6,19 +6,18 @@ Created on Mon May  5 11:39:58 2025
 @author: borfebor
 """
 
+import warnings
+
 import pandas as pd
 import numpy as np
 import streamlit as st
-import seaborn as sns
 from scipy import signal
 from scipy.optimize import curve_fit
 from scipy.fft import dct, idct
-import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
-
-from matplotlib.backends.backend_pdf import PdfPages
-from io import BytesIO
+# NOTE: all figure drawing moved to plots.py in v0.7.3 — seaborn, pyplot,
+# LinearSegmentedColormap, PdfPages and BytesIO are imported there now, not here.
 from statsmodels.tsa.tsatools import detrend
+from statsmodels.nonparametric.smoothers_lowess import lowess
 from scipy.stats import fisher_exact, ttest_ind
 from itertools import combinations
 from astropy.timeseries import LombScargle
@@ -226,70 +225,477 @@ class methods:
         resampled_df[t_col] = resampled_df[t_col].astype(int)
         return resampled_df.reset_index(drop=True)
 
-    @staticmethod
-    def linear_detrend(df, cols):
-        return signal.detrend(df[cols], type='linear')
+    # ── NaN handling for detrending ─────────────────────────────────────────────
+    #
+    # Every detrending method except the rolling mean used to fail on missing data,
+    # and each failed differently: `scipy.signal.detrend` RAISES
+    # ("array must not contain infs or NaNs"), while `statsmodels.detrend` and
+    # `signal.hilbert` silently return an all-NaN column — so a single gap in one
+    # well quietly wiped that well from the analysis. `savitzky_golay` already
+    # handled this properly; the helpers below give the detrending path the same
+    # contract: interpolate for the fit, then put the gaps back where they were.
 
     @staticmethod
-    def cubic_detrend(df, cols):
-        return detrend(df[cols], order=3)
+    def _fill_for_fit(frame):
+        """
+        Return (filled_frame, nan_mask). The filled frame is safe to hand to a
+        least-squares fit or an FFT-based filter; re-apply the mask afterwards
+        with `.mask(nan_mask)` so a gap stays a gap in the output.
+        """
+        frame = pd.DataFrame(frame).astype(float)
+        nan_mask = frame.isna()
+        if nan_mask.to_numpy().any():
+            # Columns that are entirely NaN interpolate to nothing — 0.0 keeps the
+            # fit well-posed and the mask blanks the column again on the way out.
+            frame = frame.interpolate(limit_direction="both").fillna(0.0)
+        return frame, nan_mask
+
+    # ── baseline estimators ─────────────────────────────────────────────────────
+    #
+    # Detrending is two independent decisions that used to be welded into one name:
+    # HOW the baseline is estimated, and HOW it is removed. Splitting them means
+    # every estimator gains a divisive variant for free, and the subtract-vs-divide
+    # choice becomes visible instead of being buried inside a label.
+    #
+    # Each estimator returns the BASELINE itself, aligned to df and with NaNs put
+    # back where the input had them. `detrend()` then subtracts it or divides by it.
+
+    #: Estimators the UI offers. "Rolling Hilbert" is deliberately absent — it is a
+    #: compound (rolling-mean baseline, then envelope division), not a baseline.
+    BASELINE_METHODS = ("Linear", "Cubic", "Rolling mean", "LOESS",
+                        "Exponential fit")
+
+    #: Estimators that need the window slider, in hours.
+    WINDOWED_METHODS = ("Rolling mean", "Rolling Hilbert")
+
+    # NOTE: "Running median" and "Sinc low-pass" were offered briefly in v0.7.6 and
+    # removed in v0.7.7 after `detrend_redundancy.py` measured what each was worth.
+    #
+    # Sinc was the most redundant control in the app: the residual it produced
+    # correlated with the rolling mean's at r = 0.994 over 24 real wells, it was
+    # never better than the rolling mean on a stepped or artefact-hit baseline, and
+    # it cost 40x the time for that answer.
+    #
+    # The running median was the worst estimator in all five stress cases — 3.5-5.6%
+    # interior error against a known baseline where the rolling mean gives 0.3-4.7%
+    # — because a median only ever returns a value the data actually took, so on an
+    # asymmetric waveform it is biased and it steps. Its one real advantage was
+    # resistance to a mid-run artefact (a 6 h excursion moves its baseline by 0.3%
+    # against the rolling mean's 16.8%), and LOESS gets most of that (2.8%) without
+    # paying the bias. The median was spending 5% everywhere to save 3% occasionally.
+    #
+    # STL was measured at the same time and deliberately NOT added: it is the most
+    # accurate estimator tested, but it costs 9 s per 96-well plate (60 s for the
+    # robust variant) against 0.02 s for the rolling mean, and it needs the period
+    # as an integer number of samples — the quantity the user is trying to measure.
+
+    @staticmethod
+    def polynomial_baseline(df, cols, t_col, order=1):
+        """
+        Least-squares polynomial of the given order, evaluated at every timepoint.
+
+        Two differences from the previous `signal.detrend` / `statsmodels.detrend`
+        implementations, both of which mattered on real recordings:
+
+        * The fit uses the TIME column, not the sample index. The old versions
+          assumed evenly spaced samples, so on an irregularly sampled or gap-filled
+          recording the trend they removed was not the trend in the data.
+        * NaNs are dropped from the fit rather than poisoning it. The polynomial is
+          estimated from the finite points and evaluated everywhere.
+
+        `order=1` is the "Linear" option, `order=3` the "Cubic" one.
+        """
+        frame = pd.DataFrame(df[cols]).astype(float)
+        t = np.asarray(df[t_col], dtype=float)
+
+        # Centre and scale time before fitting. Raw hours over a 6-day recording
+        # give a badly conditioned Vandermonde matrix at order 3 and numpy warns.
+        spread = np.nanstd(t)
+        tn = (t - np.nanmean(t)) / (spread if spread > 0 else 1.0)
+
+        out = {}
+        for col in frame.columns:
+            y = frame[col].to_numpy(dtype=float)
+            good = np.isfinite(y) & np.isfinite(tn)
+            if good.sum() <= order + 1:
+                # Not enough points to identify the polynomial — a flat baseline at
+                # the column mean leaves the trace essentially untouched.
+                out[col] = np.full_like(y, np.nanmean(y) if good.any() else 0.0)
+                continue
+            with warnings.catch_warnings():
+                # RankWarning moved to np.exceptions in numpy 2.0
+                warnings.simplefilter("ignore", getattr(
+                    getattr(np, "exceptions", np), "RankWarning", UserWarning))
+                coef = np.polyfit(tn[good], y[good], order)
+            out[col] = np.polyval(coef, tn)
+
+        return pd.DataFrame(out, index=frame.index, columns=frame.columns)
+
+    @staticmethod
+    def rolling_baseline(df, cols, window=10):
+        """Centred moving mean. Fast, and the most accurate estimator here in the
+        interior of a recording — but see `moving_average_gain` for what the window
+        does to amplitude, and `loess_baseline` for the artefact-resistant option."""
+        return df[cols].rolling(window=window, center=True, min_periods=1).mean()
+
+    @staticmethod
+    def loess_baseline(df, cols, t_col, span_h=48.0):
+        """
+        Locally weighted regression (LOESS/LOWESS): a straight line fitted through
+        the points near each timepoint, weighted by distance and re-weighted to
+        discount outliers.
+
+        Two things it does better than the moving average, both measured:
+
+        * **Its amplitude cost barely depends on period.** A centred moving average
+          is a perfect notch only at window = period, so at a 24 h window it keeps
+          1.156 of a 20 h rhythm and 0.652 of a 28 h one — a 1.8x spread that
+          biases every amplitude comparison between samples of different period.
+          At a span of twice the period LOESS keeps 1.076 / 1.072 / 1.005 across
+          20 / 24 / 28 h. Nearly flat.
+        * **An artefact does not spread.** A 6 h excursion moves the rolling-mean
+          baseline by 16.8% of the baseline OUTSIDE the artefact; LOESS moves 2.8%.
+          That resistance comes from the robustifying iterations, so `it=3` stays.
+
+        `span_h` MUST be comfortably longer than the period. A local line fitted
+        over one period follows the oscillation and removes it: at span = period
+        only 0.571 of a 24 h rhythm survives. Twice the period is the default.
+
+        `delta` is the speed knob: within that distance lowess interpolates instead
+        of fitting. At 1% of the recording it is 6x faster — 0.96 s for a 96-well
+        plate against 5.97 s — and the baseline moves by 0.06%.
+        """
+        filled, nan_mask = methods._fill_for_fit(df[cols])
+        t = np.asarray(df[t_col], dtype=float)
+        span = float(np.nanmax(t) - np.nanmin(t)) or 1.0
+        frac = float(np.clip(float(span_h) / span, 0.05, 1.0))
+
+        out = {}
+        for col in filled.columns:
+            out[col] = lowess(filled[col].to_numpy(dtype=float), t,
+                              frac=frac, it=3, delta=0.01 * span,
+                              return_sorted=False)
+        return pd.DataFrame(out, index=filled.index,
+                            columns=filled.columns).mask(nan_mask)
+
+    @staticmethod
+    def loess_gain(span_h, period_h, delta_t, n_points):
+        """
+        Fraction of a `period_h` oscillation that survives LOESS detrending at this
+        span.
+
+        There is no closed form the way there is for a moving average, so this
+        measures it: run the filter over a synthetic sine of that period and read
+        off what is left. One lowess call on a short series, a few milliseconds —
+        cheap enough to show the user the real number instead of a rule of thumb.
+        """
+        if not all(np.isfinite([span_h, period_h, delta_t])) or min(
+                span_h, period_h, delta_t) <= 0:
+            return np.nan
+        n = int(min(max(n_points, 64), 2000))
+        t = np.arange(n) * delta_t
+        span = float(t[-1]) or 1.0
+        if span <= period_h:
+            return np.nan
+        y = np.sin(2 * np.pi * t / period_h)
+        base = lowess(y, t, frac=float(np.clip(span_h / span, 0.05, 1.0)),
+                      it=3, delta=0.01 * span, return_sorted=False)
+        mid = slice(n // 4, 3 * n // 4)
+        ref = np.ptp(y[mid])
+        return float(np.ptp((y - base)[mid]) / ref) if ref else np.nan
+
+    @staticmethod
+    def exponential_baseline(df, cols, t_col):
+        """
+        A + B*exp(-t/tau), the shape substrate consumption actually has.
+
+        A cubic is a fudge for this: it has no asymptote, so it bends back up at
+        the end of the recording. The exponential has the lowest edge error of any
+        estimator here (5% against the rolling mean's 12%) precisely because its
+        shape is right rather than merely flexible.
+
+        Falls back to a linear baseline for any column the fit cannot converge on —
+        a flat or noise-only well has no decay to find.
+        """
+        frame = pd.DataFrame(df[cols]).astype(float)
+        t = np.asarray(df[t_col], dtype=float)
+        t0 = t - np.nanmin(t)
+
+        def model(x, a, tau, c):
+            return a * np.exp(-x / max(tau, 1e-6)) + c
+
+        span = float(np.nanmax(t0)) if np.isfinite(np.nanmax(t0)) else 1.0
+        failed, out = [], {}
+        for col in frame.columns:
+            y = frame[col].to_numpy(dtype=float)
+            good = np.isfinite(y) & np.isfinite(t0)
+            if good.sum() < 4:
+                failed.append(col)
+                out[col] = np.full_like(y, np.nanmean(y) if good.any() else 0.0)
+                continue
+            first, last = float(y[good][0]), float(y[good][-1])
+            try:
+                with warnings.catch_warnings():
+                    # A trace with no decay to find gives an unidentifiable tau and
+                    # curve_fit warns about the covariance. The fit still returns a
+                    # usable (nearly flat) baseline, which is the right answer here.
+                    warnings.simplefilter("ignore")
+                    p, _ = curve_fit(
+                        model, t0[good], y[good],
+                        p0=[first - last, max(span / 2, 1.0), last], maxfev=20000)
+                out[col] = model(t0, *p)
+            except Exception:
+                failed.append(col)
+                out[col] = np.polyval(np.polyfit(t0[good], y[good], 1), t0)
+
+        if failed:
+            methods._note(
+                f"No exponential decay could be fitted to {len(failed)} sample(s) "
+                f"({', '.join(map(str, failed[:4]))}"
+                f"{'…' if len(failed) > 4 else ''}) — a linear baseline was used "
+                "for those instead.")
+        return pd.DataFrame(out, index=frame.index, columns=frame.columns)
+
+    @staticmethod
+    def estimate_baseline(df, cols, t_col, method, window=10, delta_t=None,
+                          span_h=48.0):
+        """Dispatch to the requested estimator. Returns None for unknown names."""
+        builders = {
+            "Linear": lambda: methods.polynomial_baseline(df, cols, t_col, 1),
+            "Cubic": lambda: methods.polynomial_baseline(df, cols, t_col, 3),
+            "Rolling mean": lambda: methods.rolling_baseline(df, cols, window),
+            "LOESS": lambda: methods.loess_baseline(df, cols, t_col, span_h),
+            "Exponential fit": lambda: methods.exponential_baseline(df, cols, t_col),
+        }
+        builder = builders.get(method)
+        return builder() if builder else None
+
+    @staticmethod
+    def _note(message, level="info"):
+        """Report to the UI when there is one, and stay silent in headless use
+        (docs/make_figures.py and the verify scripts call detrend outside Streamlit)."""
+        try:
+            getattr(st, level)(message)
+        except Exception:
+            pass
+
+    @staticmethod
+    def polynomial_detrend(df, cols, t_col, order=1):
+        """Subtract a least-squares polynomial. Kept as the name the older call
+        sites use; the fit itself now lives in `polynomial_baseline`."""
+        return pd.DataFrame(df[cols]).astype(float) - methods.polynomial_baseline(
+            df, cols, t_col, order)
+
+    @staticmethod
+    def linear_detrend(df, cols, t_col=None):
+        if t_col is None:                       # kept for older call sites
+            filled, nan_mask = methods._fill_for_fit(df[cols])
+            out = pd.DataFrame(signal.detrend(filled.to_numpy(), type='linear', axis=0),
+                               index=filled.index, columns=filled.columns)
+            return out.mask(nan_mask)
+        return methods.polynomial_detrend(df, cols, t_col, order=1)
+
+    @staticmethod
+    def cubic_detrend(df, cols, t_col=None):
+        if t_col is None:                       # kept for older call sites
+            filled, nan_mask = methods._fill_for_fit(df[cols])
+            out = pd.DataFrame(np.asarray(detrend(filled, order=3)),
+                               index=filled.index, columns=filled.columns)
+            return out.mask(nan_mask)
+        return methods.polynomial_detrend(df, cols, t_col, order=3)
 
     @staticmethod
     def rolling_mean(df, cols, window=10):
         return df[cols] - df[cols].rolling(window=window, center=True, min_periods=1).mean()
 
+    # NOTE: `hilbert_rolling_mean` ("Hilbert + Rolling mean") was removed in v0.7.2.
+    # Once the Stage-1 fixes centred rolling() and corrected the Hilbert axis, it
+    # became bit-for-bit identical to envelope_rolling() ("Rolling Hilbert"):
+    # centred rolling-mean baseline subtraction, then division by the Hilbert
+    # envelope along time. Two names for one algorithm. "Rolling Hilbert" is kept.
+
     @staticmethod
-    def hilbert_rolling_mean(df, cols, window=10):
-        baseline = df[cols].rolling(window=window, center=True, min_periods=1).mean()
-        detrended = df[cols] - baseline
-        N_samples = len(cols)
-        envelope = np.abs(signal.hilbert(detrended, N=N_samples))
-        return detrended / envelope
-    
+    def moving_average_gain(window_pts, period_h, delta_t):
+        """
+        Fraction of a `period_h` oscillation that SURVIVES rolling-mean detrending
+        with a centred window of `window_pts` samples.
+
+        A centred moving average of N samples has frequency response
+        H = sin(pi*N*dt/T) / (N*sin(pi*dt/T)), and subtracting it leaves 1 - H.
+        H is exactly zero when the window equals the period, so the ideal window
+        for a 24 h rhythm is 24 h: gain 1.000, nothing lost.
+
+        Away from that, the cost is real and asymmetric. At the app's old fixed
+        20 h default: T=20 h keeps 1.000, T=24 h keeps 0.809, T=28 h keeps 0.652 —
+        so a short-period genotype came out of preprocessing with half again as
+        much apparent amplitude as a long-period one. Windows LONGER than the
+        period overshoot instead (30 h window on a 24 h rhythm: 1.180), because H
+        goes negative and the subtraction adds a phase-inverted copy back in.
+
+        Returned so the UI can show the number rather than leave it implicit.
+        """
+        if not np.isfinite(delta_t) or delta_t <= 0 or not np.isfinite(period_h) or period_h <= 0:
+            return np.nan
+        n = int(round(window_pts))
+        if n < 1:
+            return np.nan
+        denom = n * np.sin(np.pi * delta_t / period_h)
+        if abs(denom) < 1e-12:
+            return np.nan
+        h = np.sin(np.pi * n * delta_t / period_h) / denom
+        return float(1.0 - h)
+
     @staticmethod
-    def estimate_envelope(y):
-        # Prefer Hilbert envelope (works even if peaks messy)
-        analytic = np.abs(signal.hilbert(y, axis=0))
-        return y / analytic
+    def estimate_envelope(y, win=None):
+        """
+        Divide by the amplitude envelope, flattening a damped rhythm to constant
+        amplitude.
+
+        `signal.hilbert` returns the ANALYTIC MODULUS, which is only a smooth
+        envelope for a narrowband signal. On a real noisy trace it wobbles
+        cycle-to-cycle, and dividing by it inflates exactly the low-amplitude
+        stretches — the troughs and the tail of a damping run — where the noise
+        lives. Smoothing the modulus over roughly one cycle before dividing gives
+        the envelope the shape it is supposed to have.
+
+        `win` is the smoothing window in samples; pass the same window used for the
+        rolling-mean step. None keeps the old raw-modulus behaviour.
+        """
+        frame = pd.DataFrame(y)
+        filled, nan_mask = methods._fill_for_fit(frame)
+
+        env = pd.DataFrame(np.abs(signal.hilbert(filled.to_numpy(dtype=float), axis=0)),
+                           index=filled.index, columns=filled.columns)
+        if win is not None and int(win) > 1:
+            env = env.rolling(int(win), center=True, min_periods=1).mean()
+
+        # A near-zero envelope means there is nothing to normalise there; NaN is
+        # honest, a huge quotient is not.
+        env = env.where(env > 1e-12)
+        out = filled / env
+        return out.mask(nan_mask)
 
     @staticmethod
     def rolling(y, win=20):
-        rol = y.rolling(win, min_periods=1).mean()
+        # centred, to match rolling_mean() — an uncentred window shifts the phase
+        # of the detrended trace by half the window.
+        rol = y.rolling(win, center=True, min_periods=1).mean()
         return y - rol
-    
+
     @staticmethod
     def envelope_rolling(y, win=20):
-        y = methods.rolling(y, win=20)
-        y = methods.estimate_envelope(y)
+        y = methods.rolling(y, win=win)
+        y = methods.estimate_envelope(y, win=win)
         return y
+
+    # NOTE: Butterworth band-pass smoothing (`butter_bandpass_filter` / `apply_butter`)
+    # was removed in v0.7.2. Its 18-30 h band was hardcoded and ignored the period
+    # slider, and the band frequently landed above Nyquist for coarsely sampled
+    # recordings, where scipy raises "critical frequencies must be 0 < Wn < 1".
+    # Savitzky-Golay below covers the same need without the failure mode.
+
+    # ── Savitzky-Golay smoothing ────────────────────────────────────────────────
 
     @staticmethod
-    def butter_bandpass_filter(data, lowcut, highcut, fs, order=4):
+    def savgol_window(window_h, delta_t, polyorder, n_points):
         """
-        Band-pass Butterworth filter:
-        - data : array of signal values
-        - lowcut / highcut : frequencies (cycles per hour)
-        - fs : sampling frequency (samples per hour)
+        Translate a smoothing window expressed in HOURS into a valid
+        `scipy.signal.savgol_filter` window_length (in samples).
+
+        savgol_filter requires window_length to be odd, strictly greater than
+        polyorder, and (with mode='interp') no longer than the series itself.
+        Rather than letting any of those raise, we clamp and report what we did.
+
+        Returns
+        -------
+        (n, polyorder, note) : the window length actually usable in samples, the
+        polyorder actually usable, and a human-readable note (empty string when
+        the requested window was used unchanged). `n` is None when the series is
+        too short to smooth at all.
         """
-        nyq = 0.5 * fs  # Nyquist frequency
-        low = lowcut / nyq
-        high = highcut / nyq
-        b, a = signal.butter(order, [low, high], btype='band')
-        y = signal.filtfilt(b, a, data)  # zero-phase filtering
-        return y
+        if not np.isfinite(delta_t) or delta_t <= 0:
+            return None, polyorder, "Sampling interval is unknown — smoothing skipped."
 
-    def apply_butter(data, data_cols, fs, lowcut=30, highcut=18):
+        requested = int(round(window_h / delta_t))
+        n = requested if requested % 2 == 1 else requested + 1
 
-        filtered = np.apply_along_axis(
-                    methods.butter_bandpass_filter,
-                    axis=0,
-                    arr=data[data_cols],
-                    lowcut=1/lowcut,
-                    highcut=1/highcut,
-                    fs=fs,
-                    order=4
-                    )
-        return pd.DataFrame(filtered, columns=data_cols)
+        # Largest usable odd window: cannot exceed the number of timepoints
+        max_n = n_points if n_points % 2 == 1 else n_points - 1
+        # Smallest odd window strictly greater than polyorder
+        min_n = polyorder + 1 if (polyorder + 1) % 2 == 1 else polyorder + 2
+
+        if max_n < 3:
+            return None, polyorder, (
+                f"Only {n_points} timepoints — too few to smooth. Smoothing skipped."
+            )
+
+        # If polyorder cannot fit in the longest available window, lower it
+        if min_n > max_n:
+            polyorder = max_n - 1
+            min_n = polyorder + 1 if (polyorder + 1) % 2 == 1 else polyorder + 2
+
+        note = ""
+        if n < min_n:
+            note = (
+                f"A {window_h:g} h window is only {max(requested, 1)} sample(s) at "
+                f"{delta_t:.2f} h sampling — too short for a degree-{polyorder} fit. "
+                f"Using {min_n} points ({min_n * delta_t:.1f} h) instead."
+            )
+            n = min_n
+        elif n > max_n:
+            note = (
+                f"A {window_h:g} h window is longer than the recording. "
+                f"Using {max_n} points ({max_n * delta_t:.1f} h) instead."
+            )
+            n = max_n
+
+        return n, polyorder, note
+
+    @staticmethod
+    def savitzky_golay(df, cols, delta_t, window_h=6.0, polyorder=2):
+        """
+        Savitzky-Golay smoothing with the window specified in HOURS.
+
+        A local least-squares polynomial fit. Unlike a moving average it preserves
+        peak height and width, which matters here because amplitude and waveform
+        shape are downstream features.
+
+        Why hours and not samples: the same number of samples means very different
+        things at 1-min and 1-h sampling. Expressed in hours the filter has the same
+        effect on the biology regardless of how densely the run was recorded.
+
+        Why 6 h by default: measured gain on a 24 h rhythm is 0.998 (0.2% amplitude
+        loss) and 0.975 at the 12 h harmonic that carries waveform asymmetry, while
+        white noise drops to ~42% RMS at 30-min sampling and everything at 4 h and
+        below is suppressed below 0.15. A 12 h window would cut the 12 h harmonic to
+        0.73 and visibly round the waveform.
+
+        Returns (smoothed_df, note).
+        """
+        values = df[cols].to_numpy(dtype=float)
+        n, polyorder, note = methods.savgol_window(
+            window_h, delta_t, polyorder, values.shape[0]
+        )
+        if n is None:
+            return df[cols], note
+
+        # savgol_filter has no NaN handling — a single gap would otherwise poison a
+        # whole window. Interpolate for the fit, then put the gaps back.
+        frame = pd.DataFrame(values, index=df.index, columns=cols)
+        nan_mask = frame.isna()
+        if nan_mask.to_numpy().any():
+            frame = frame.interpolate(limit_direction="both")
+            frame = frame.fillna(0.0)   # columns that are entirely NaN
+
+        smoothed = signal.savgol_filter(
+            frame.to_numpy(dtype=float),
+            window_length=n,
+            polyorder=polyorder,
+            axis=0,
+            mode="interp",
+        )
+        out = pd.DataFrame(smoothed, index=df.index, columns=cols)
+        return out.mask(nan_mask), note
 
     @staticmethod
     def dct_period_filter(signal, dt, min_period=6):
@@ -307,25 +713,158 @@ class methods:
         return filtered
 
     @staticmethod
-    def detrend(df, cols, t_col, method='None'):
+    def remove_baseline(df, cols, baseline, removal="Subtract"):
+        """
+        Take the baseline out of the signal, either additively or multiplicatively.
+
+        Subtract  ->  y - baseline          (residual, in the original units)
+        Divide    ->  y / baseline - 1      (relative deviation, i.e. dF/F)
+
+        Why divide at all: for bioluminescence and fluorescence the baseline is a
+        MULTIPLYING factor, not an added offset — substrate depletion, cell number
+        and bleaching scale the whole signal, oscillation included. Subtracting
+        leaves the residual still multiplied by a decaying baseline, so the rhythm
+        looks like it is damping faster than it is. On tutorial 2, where the
+        generator plants damping with tau in 120-165 h, every subtractive method
+        reports 89-94 h; dividing gives 161 h and recovers the relative amplitude
+        to within 5% of the planted value.
+
+        The `- 1` matters: it puts the output back on a zero centre, so everything
+        downstream (plots, normalisation, the amplitude features, the QC flags)
+        sees the same shape of trace it sees after subtraction, in units of
+        fractional deviation from baseline.
+
+        Division is refused, with a message, when the baseline is not safely
+        positive — on centred, z-scored or background-subtracted data the baseline
+        passes through zero and the quotient explodes. In that case the subtractive
+        result is returned instead, so the app keeps working.
+        """
+        signal_df = pd.DataFrame(df[cols]).astype(float)
+        if removal != "Divide":
+            return signal_df - baseline
+
+        b = pd.DataFrame(baseline).astype(float)
+        scale = float(np.nanmedian(np.abs(b.to_numpy())))
+        floor = max(scale * 1e-3, 1e-12)
+        unsafe = b.columns[(b.min(skipna=True) <= floor).to_numpy()].tolist()
+        if unsafe:
+            methods._note(
+                f"Divide is only meaningful where the baseline stays positive, and "
+                f"it reaches zero or below in {len(unsafe)} sample(s) "
+                f"({', '.join(map(str, unsafe[:4]))}{'…' if len(unsafe) > 4 else ''}). "
+                "That normally means the data has already been centred or "
+                "background-subtracted. Subtracting the baseline instead.",
+                level="warning")
+            return signal_df - baseline
+
+        return signal_df / b - 1.0
+
+    @staticmethod
+    def detrend(df, cols, t_col, method='None', period_range=None,
+                removal='Subtract'):
+        """
+        `period_range` is the (min, max) of the sidebar Period range slider. The
+        rolling window defaults to the middle of that band, because a centred
+        moving average is a perfect notch only when the window equals the period —
+        see `moving_average_gain` for the numbers. The window used to default to a
+        flat ~20 h regardless of the biology, which quietly scaled amplitudes by
+        anything between 0.65 and 1.2 depending on a sample's period.
+
+        `removal` picks how the baseline comes out — see `remove_baseline`. It
+        defaults to 'Subtract', so every existing call site (the verify scripts,
+        docs/make_figures.py, tutorials/verify_tutorial_data.py) keeps the exact
+        behaviour it had.
+        """
         if method == 'None':
             return df[cols]
 
-        suggested = int(10 / df[t_col].diff().mean())
-        
-        mean_interval = df[t_col].diff().mean()
-        window_hours = int(mean_interval*suggested*2)
-        win = st.slider(f"Window size (suggested = {window_hours} h | {suggested*2} points)", int(suggested), 
-                        int(suggested * 4), int(suggested*2)) if 'Rolling' in method else 10
+        delta_t = float(df[t_col].diff().mean())
+        if not np.isfinite(delta_t) or delta_t <= 0:
+            delta_t = 1.0
 
-        methods_map = {
-            'Linear': methods.linear_detrend(df, cols),
-            'Rolling mean': methods.rolling_mean(df, cols, win),
-            'Hilbert + Rolling mean': methods.hilbert_rolling_mean(df, cols, win),
-            'Rolling Hilbert': methods.envelope_rolling(df[cols], win),
-            'Cubic': methods.cubic_detrend(df, cols),
-        }
-        return methods_map.get(method, df[cols])
+        # Target window: the middle of the period band the user is searching in.
+        target_h = float(np.mean(period_range)) if period_range else 24.0
+        span_h = float(df[t_col].max() - df[t_col].min())
+
+        win = 10
+        if method in methods.WINDOWED_METHODS:
+            lo_h = max(2 * delta_t, round(0.5 * target_h, 1))
+            hi_h = min(max(3 * target_h, lo_h + delta_t), max(span_h, lo_h + delta_t))
+            default_h = float(np.clip(target_h, lo_h, hi_h))
+            # Static label so docs.attach() can key a tooltip to it — the old label
+            # interpolated the suggested window and so could never be documented.
+            win_h = st.slider(
+                "Detrending window (h)",
+                float(lo_h), float(hi_h), default_h, step=float(max(delta_t, 0.1)),
+            )
+            win = max(1, int(round(win_h / delta_t)))
+
+            # Say out loud what this window does to the amplitude at both ends of
+            # the period band, so a biased comparison cannot happen silently.
+            lo_p, hi_p = (period_range if period_range else (target_h, target_h))
+            g_lo = methods.moving_average_gain(win, lo_p, delta_t)
+            g_hi = methods.moving_average_gain(win, hi_p, delta_t)
+            if np.isfinite(g_lo) and np.isfinite(g_hi):
+                methods._note(
+                    f"Window {win_h:g} h ({win} points) keeps "
+                    f"{g_lo:.0%} of a {lo_p:g} h rhythm and {g_hi:.0%} of a {hi_p:g} h one.",
+                    level="caption",
+                )
+                if max(abs(g_lo - 1), abs(g_hi - 1)) > 0.15:
+                    methods._note(
+                        "Across your period range this window scales amplitude by "
+                        f"{min(g_lo, g_hi):.0%}-{max(g_lo, g_hi):.0%}. That is fine if "
+                        "the range is just a generous search band and your samples all "
+                        "sit near {0:g} h — but if their periods genuinely differ, "
+                        "amplitude comparisons between them carry this bias. Period and "
+                        "phase are unaffected.".format(target_h),
+                        level="warning",
+                    )
+
+        # LOESS takes a SPAN, not a window, and the two are not interchangeable: a
+        # local line fitted over one period follows the oscillation and removes it
+        # (span = period leaves only 0.571 of a 24 h rhythm). Twice the period is
+        # the default, where the amplitude cost is both small and — unlike the
+        # moving average — nearly independent of the period.
+        loess_span = 2 * target_h
+        if method == 'LOESS':
+            lo_s = max(2 * delta_t, round(1.5 * target_h, 1))
+            hi_s = max(min(5 * target_h, max(span_h, lo_s + 1)), lo_s + 1)
+            loess_span = st.slider(
+                "LOESS span (h)",
+                float(lo_s), float(hi_s), float(np.clip(2 * target_h, lo_s, hi_s)),
+                step=1.0,
+            )
+            lo_p, hi_p = (period_range if period_range else (target_h, target_h))
+            g_lo = methods.loess_gain(loess_span, lo_p, delta_t, len(df))
+            g_hi = methods.loess_gain(loess_span, hi_p, delta_t, len(df))
+            if np.isfinite(g_lo) and np.isfinite(g_hi):
+                methods._note(
+                    f"Span {loess_span:g} h keeps {g_lo:.0%} of a {lo_p:g} h rhythm "
+                    f"and {g_hi:.0%} of a {hi_p:g} h one.",
+                    level="caption",
+                )
+                if min(g_lo, g_hi) < 0.9:
+                    methods._note(
+                        f"A {loess_span:g} h span is close to the period you are "
+                        "measuring, so the local fit is following the rhythm and "
+                        f"removing it — only {min(g_lo, g_hi):.0%} survives. Widen the "
+                        f"span to about {2 * target_h:g} h.",
+                        level="warning",
+                    )
+
+        # "Rolling Hilbert" stays a compound of its own: rolling-mean baseline plus
+        # envelope division. `removal` does not apply — it already divides, by the
+        # envelope rather than by the baseline.
+        if method == 'Rolling Hilbert':
+            return methods.envelope_rolling(df[cols], win)
+
+        baseline = methods.estimate_baseline(
+            df, cols, t_col, method, window=win, delta_t=delta_t, span_h=loess_span)
+        if baseline is None:
+            return df[cols]
+
+        return methods.remove_baseline(df, cols, baseline, removal)
 
     @staticmethod
     def min_max(df, cols, mode='all'):
@@ -377,18 +916,41 @@ class methods:
             raise ValueError("Signal has zero variance")
         return acov / acov[0]
 
-    def period_correlation(data, min_lag=2, max_lag=None, threshold=0.2):
+    def period_correlation(data, delta_t, min_period=None, max_period=None, threshold=0.2):
+        """
+        Dominant period from the autocorrelation function, **in hours**.
+
+        Parameters
+        ----------
+        data       : array-like signal
+        delta_t    : sampling interval in hours (required — the ACF peak is a lag
+                     index, and without delta_t the result is in samples, not hours)
+        min_period : lower bound of the search window in hours (optional)
+        max_period : upper bound of the search window in hours (optional)
+        threshold  : minimum ACF height for a peak to count
+        """
+        if not np.isfinite(delta_t) or delta_t <= 0:
+            return np.nan
+
         ac = methods.autocorrelation(data)
-        if max_lag is None:
-            max_lag = len(data) // 2
+        n = len(data)
 
-        peaks, props = signal.find_peaks(ac[min_lag:max_lag+1], height=threshold)
+        # Translate the period window (hours) into a lag window (samples)
+        min_lag = 2 if min_period is None else max(2, int(np.floor(min_period / delta_t)))
+        hard_max = n // 2
+        max_lag = hard_max if max_period is None else min(hard_max, int(np.ceil(max_period / delta_t)))
+
+        if max_lag <= min_lag:
+            return np.nan
+
+        peaks, props = signal.find_peaks(ac[min_lag:max_lag + 1], height=threshold)
         if len(peaks) == 0:
-            return np.nan  # or raise, depending on your use case
+            return np.nan
 
-        # Adjust indices back to original ac array
-        peaks += min_lag
-        return peaks[np.argmax(props['peak_heights'])]
+        # Adjust indices back to original ac array, then convert lag -> hours
+        peaks = peaks + min_lag
+        best_lag = peaks[np.argmax(props['peak_heights'])]
+        return float(best_lag * delta_t)
     
     def fft_period_old(signal, t):
         # Perform FFT
@@ -444,6 +1006,81 @@ class methods:
 
         return 1.0 / freq_vals[peak_idx]
     
+    @staticmethod
+    def damped_cosinor_fit(y, t, min_period=18, max_period=36):
+        """
+        Fit  A * exp(-t/tau) * cos(2*pi*t/T + phi) + C  and return the parameters
+        with their standard errors.
+
+        Every other period method here is non-parametric: they look for where the
+        energy sits and read a period off the peak. That works without assuming a
+        shape, and it pays for it — over a 96 h window an FFT's bins are ~1.4 h
+        apart near 24 h, and Lomb-Scargle's peak is broadened by the very damping
+        that a decaying rhythm has. Writing the damping into the model instead of
+        fighting it recovers the planted period on the tutorial dataset to 0.08 h
+        against 0.28 h for every method above, and returns a standard error, which
+        none of them do.
+
+        The cost is the assumption: this is a single damped sinusoid, so a strongly
+        non-sinusoidal waveform or a rhythm whose period drifts mid-recording will
+        fit badly. `r2` is returned so that can be checked rather than assumed.
+
+        Returns a dict; every value is NaN if the fit does not converge.
+        """
+        fail = {"period": np.nan, "period_se": np.nan, "amplitude": np.nan,
+                "amplitude_se": np.nan, "damping_tau": np.nan,
+                "damping_tau_se": np.nan, "acrophase_h": np.nan,
+                "mesor": np.nan, "r2": np.nan}
+
+        y = np.asarray(y, dtype=float)
+        t = np.asarray(t, dtype=float)
+        good = np.isfinite(y) & np.isfinite(t)
+        if good.sum() < 8:
+            return fail
+        y, t = y[good], t[good]
+        t0 = t - t.min()
+        span = float(t0.max())
+        if span <= 0:
+            return fail
+
+        def model(x, A, tau, T, phi, C):
+            return A * np.exp(-x / max(tau, 1e-6)) * np.cos(
+                2 * np.pi * x / max(T, 1e-6) + phi) + C
+
+        # Start from the middle of the period band, an undamped guess, and the
+        # observed half-range. tau starts at the recording length: "not obviously
+        # damping" is the neutral prior, and the fit moves off it easily.
+        T0 = float(np.clip(0.5 * (min_period + max_period), min_period, max_period))
+        p0 = [(np.nanmax(y) - np.nanmin(y)) / 2 or 1.0, span, T0, 0.0, float(np.nanmean(y))]
+        bounds = ([0, 1e-3, float(min_period), -2 * np.pi, -np.inf],
+                  [np.inf, 1e6, float(max_period), 2 * np.pi, np.inf])
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                popt, pcov = curve_fit(model, t0, y, p0=p0, bounds=bounds,
+                                       maxfev=40000)
+        except Exception:
+            return fail
+
+        A, tau, T, phi, C = popt
+        se = np.sqrt(np.abs(np.diag(pcov))) if pcov is not None else np.full(5, np.nan)
+        resid = y - model(t0, *popt)
+        ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+        r2 = float(1 - np.sum(resid ** 2) / ss_tot) if ss_tot > 0 else np.nan
+
+        # Peak time within the first cycle, to match cosinor_acrophase_h.
+        acro_h = float(((-phi) % (2 * np.pi)) / (2 * np.pi) * T)
+
+        return {"period": float(T), "period_se": float(se[2]),
+                "amplitude": float(abs(A)), "amplitude_se": float(se[0]),
+                "damping_tau": float(tau), "damping_tau_se": float(se[1]),
+                "acrophase_h": acro_h, "mesor": float(C), "r2": r2}
+
+    @staticmethod
+    def damped_cosinor_period(y, t, min_period=18, max_period=36):
+        """Period only, for `period_estimation`."""
+        return methods.damped_cosinor_fit(y, t, min_period, max_period)["period"]
+
     def Lomb_Scargle(signal, t, min_period, max_period):
         
         frequency, power = LombScargle(t, signal).autopower(minimum_frequency=1/max_period,
@@ -460,13 +1097,19 @@ class methods:
         
         wAn = WAnalyzer(periods, dt, p_max=20)
     
-        wAn.compute_spectrum(data)
-        
-        f, Pxx = signal.periodogram((data - data.mean()) / data.std(), 
-                                    fs=dt)
+        # do_plot defaults to True in pyboat, so this drew — and leaked — one
+        # matplotlib figure per sample per Streamlit rerun. Wavelet Transform is the
+        # default period method, so a 96-well plate leaked 96 figures every time any
+        # widget was touched. We only want the numbers here; the Wavelet Ridge view
+        # draws its own figure separately.
+        wAn.compute_spectrum(data, do_plot=False)
+
+        # fs is a sampling FREQUENCY (samples per hour), i.e. 1/dt — not dt.
+        f, Pxx = signal.periodogram((data - data.mean()) / data.std(),
+                                    fs=1 / dt)
         max_power = Pxx.max()
         dominant_freq = f[Pxx.argmax()]
-        
+
         suggested = int(1 / t_col.diff().mean() * 10) * 4
         #thresh = max_power * dominant_freq
         #st.write(thresh, suggested)
@@ -483,17 +1126,36 @@ class methods:
         #return np.average(wAn.ridge_data['periods'], weights=wAn.ridge_data['power'])  # this is a pandas DataFrame holding the ridge results
     
     @staticmethod
+    def sampling_interval(t):
+        """
+        Mean sampling interval, in whatever unit `t` is in.
+
+        Derived from the SORTED UNIQUE timepoints. Do not use
+        `df[t_col].value_counts().index` for this — value_counts sorts by
+        frequency, not by time, so with uneven replicate counts (or simply
+        unsorted rows) np.diff over that index is meaningless and can even
+        come out negative.
+        """
+        u = np.sort(pd.unique(np.asarray(t, dtype=float)))
+        if len(u) < 2:
+            return np.nan
+        return float(np.mean(np.diff(u)))
+
+    @staticmethod
     def period_estimation(df, cols, t_col, method='None', min_period=18, max_period=36):
         if method == 'None':
             return 'No period estimation'
-    
+
+        delta_t = methods.sampling_interval(df[t_col].values)
+
         methods_map = {
             'Fast Fourier Transform (FFT)': lambda: df[cols].apply(lambda x: methods.fft_period(x, df[t_col].values)),
             'Lomb-Scargle Periodogram':    lambda: df[cols].apply(lambda x: methods.Lomb_Scargle(x, df[t_col].values, min_period, max_period)),
-            'Autocorrelation':             lambda: df[cols].apply(lambda x: methods.period_correlation(x)),
-            'Wavelet Transform':           lambda: df[cols].apply(lambda x: methods.wavelet(x, df[t_col], min_period, max_period))
+            'Autocorrelation':             lambda: df[cols].apply(lambda x: methods.period_correlation(x, delta_t, min_period, max_period)),
+            'Wavelet Transform':           lambda: df[cols].apply(lambda x: methods.wavelet(x, df[t_col], min_period, max_period)),
+            'Damped Cosinor':              lambda: df[cols].apply(lambda x: methods.damped_cosinor_period(x, df[t_col].values, min_period, max_period)),
         }
-    
+
         # Get the selected method and execute it if exists, otherwise return the original df[cols]
         return methods_map.get(method, lambda: df[cols])()
 
@@ -543,561 +1205,6 @@ class methods:
         
         return peak_hours
     
-    def phase_plot(ent, ax, peaks, group='norm_day', pal=['#EBEBEB', '#FFFFFF'], order=0):
-
-        if order == 0:
-            pal = pal[::-1]
-        # Simulated data
-        peak_hours = peaks#ent.iloc[peaks][group].values  # 100 genes
-        angles = 2 * np.pi * peak_hours / 24
-    
-        #pal = sns.color_palette('vlag', 5).as_hex()
-    
-        # Histogram
-        num_bins = 24
-        bins = np.linspace(0, 2 * np.pi, num_bins + 1)
-        counts, _ = np.histogram(angles, bins=bins)
-        bin_centers = (bins[:-1] + bins[1:]) / 2
-    
-    
-        # === Step 1: Draw background half-sectors ===
-        # Fill from 0 to π (e.g., "night")
-        ax.bar(x=np.linspace(0, np.pi, 100), height=[max(counts)*1.2]*100,
-               width=np.pi/100, bottom=0, color=pal[0], alpha=1, edgecolor='none', zorder=-10)
-    
-        # Fill from π to 2π (e.g., "day")
-        ax.bar(x=np.linspace(np.pi, 2*np.pi, 100), height=[max(counts)*1.2]*100,
-               width=np.pi/100, bottom=0, color=pal[1], alpha=1, edgecolor='none', zorder=-10)
-    
-        # === Step 2: Draw actual data bars ===
-        bars = ax.bar(bin_centers, counts, width=2*np.pi/num_bins, bottom=0.0,
-                      align='center', alpha=1, color='#022F40', edgecolor='k')
-    
-        # === Step 3: Styling ===
-        ax.set_theta_zero_location("N")
-        ax.set_theta_direction(-1)
-        xtick_hours = [0, 6, 12, 18]
-        xtick_angles = [2 * np.pi * h / 24 for h in xtick_hours]
-    
-        ax.set_xticks(xtick_angles)
-        ax.set_xticklabels([str(h) for h in xtick_hours])
-        #ax.set_yticklabels([i for i in range(, 10, 2)])
-        ax.set_ylim(0, max(counts)*1.2)
-        plt.locator_params(axis='y', nbins=2)
-        
-    def plot_entrainment(fig, plot, t_col, xtick_start, xtick_end, ent_days, order=0, T=24, color='#EBEBEB'):
-        
-            start_time = xtick_start
-            end_time = (start_time + T * ent_days) 
-            
-            # If Time is datetime, convert to numeric hours for easier spacing
-            if np.issubdtype(plot[t_col].dtype, np.datetime64):
-                time_unit = 'datetime'
-                total_seconds = (end_time - start_time).total_seconds()
-                num_bands = int(total_seconds // (12 * 3600)) 
-                delta = pd.Timedelta(hours=12)
-            else:
-                time_unit = 'numeric'
-                num_bands = int((end_time - start_time) // (T/2)) 
-                delta = (T/2)
-                
-            for i in range(num_bands):
-                band_start = start_time + i * delta + T/2 * order
-                band_end = band_start + delta 
-                if i % 2 == 0:  # Every other band
-                    plt.axvspan(band_start, band_end, color=color, alpha=1, zorder=-10)
-            return fig
-        
-    def plot_entrainment_ax(ax, plot, t_col, xtick_start, xtick_end, ent_days, order=0, T=24, color='#EBEBEB'):
-            
-                start_time = xtick_start
-                end_time = (start_time + T * ent_days) 
-                
-                # If Time is datetime, convert to numeric hours for easier spacing
-                if np.issubdtype(plot[t_col].dtype, np.datetime64):
-                    time_unit = 'datetime'
-                    total_seconds = (end_time - start_time).total_seconds()
-                    num_bands = int(total_seconds // (12 * 3600)) 
-                    delta = pd.Timedelta(hours=12)
-                else:
-                    time_unit = 'numeric'
-                    num_bands = int((end_time - start_time) // (T/2)) 
-                    delta = (T/2)
-                    
-                for i in range(num_bands):
-                    band_start = start_time + i * delta + T/2 * order
-                    band_end = band_start + delta 
-                    if i % 2 == 0:  # Every other band
-                        ax.axvspan(band_start, band_end, color=color, alpha=1, zorder=-10)
-        
-    def plot(df, t_col, p_col, t0, t1, bg_color='white', ent=False, ent_days=0, features=None, 
-             order=0, T=24, color='white', unit='Measured unit'):
-        
-        fig, ax = plt.subplots(1, figsize=(10, 4))
-        ax.set_facecolor(bg_color)
-        
-        plot = df[(df[t_col] >= t0) & (df[t_col] <= t1) ]
-        #plt.plot(plot[t_col], plot[p_col])
-        sns.lineplot(plot, x=t_col, y=p_col)
-        
-        scat = st.toggle('Show datapoints', True)
-        if scat:
-            sns.scatterplot(plot, x=t_col, y=p_col, edgecolor='k', zorder=10)
-        
-        # Get actual min and max from your data
-        xmin = plot[t_col].min()
-        xmax = plot[t_col].max()
-        
-        ymin = plot[p_col].min()
-        ymax = plot[p_col].max()
-        
-        # Añadir margen manual (5%)
-        x_margin = (xmax - xmin) * 0.07
-        y_margin = (ymax - ymin) * 0.07
-
-        # Calculate start and end of xticks, rounded to nearest multiples of 24
-        xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-        xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-        
-        if features is not None:
-            #st.write(features)
-            vmin, vmax = plot[p_col].min(), plot[p_col].max()
-            methods.feature_entrainment(ax, features, bg_color, color, ymin - y_margin, ymax + y_margin,
-                order=order)
-        
-        ax.set_xlim(xmin - x_margin, xmax + x_margin)
-        ax.set_ylim(ymin - y_margin, ymax + y_margin)
-        #if ent_days > 0:
-            # Example for creating banded background every 12 hours
-            
-        #    fig = methods.plot_entrainment(fig, plot, t_col, xtick_start, xtick_end, ent_days, order=order, T=T, color=color)
-        
-        # Generate ticks at every 24 units
-        xticks = np.arange(xtick_start, xtick_end + 1, 24)
-        plt.xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
-        plt.xlabel('Time (h)')
-        plt.ylabel(unit)
-        return fig
-    
-    def multiplot(ax, df, t_col, p_col, t0, t1, bg_color='white', ent=False, ent_days=0, 
-             order=0, T=24, color='white', unit='Measured unit'):
-        
-       # fig, ax = plt.subplots(1, figsize=(10, 4))
-        ax.set_facecolor(bg_color)
-        
-        plot = df[(df[t_col] >= t0) & (df[t_col] <= t1) ]
-        plt.plot(plot[t_col], plot[p_col])
-        
-        # Get actual min and max from your data
-        xmin = plot[t_col].min()
-        xmax = plot[t_col].max()
-        
-        # Calculate start and end of xticks, rounded to nearest multiples of 24
-        xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-        xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-        
-        if ent_days > 0:
-            # Example for creating banded background every 12 hours
-    
-            methods.plot_entrainment(ax, plot, t_col, xtick_start, xtick_end, ent_days, order=order, T=T, color=color)
-        
-        # Generate ticks at every 24 units
-        xticks = np.arange(xtick_start, xtick_end + 1, 24)
-        plt.xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
-        plt.xlabel('Time (h)')
-        plt.ylabel(unit)
-        return ax
-    
-    def grouped_plot(df, t_col, t0, t1, group, layout,  bg_color='white', ent=False, ent_days=0, 
-             order=0, T=24, color='white', unit='Measured unit'):
-        
-        cols = layout[layout.Condition == group]['name'].to_list()     
-        
-        fig, ax = plt.subplots(1, figsize=(10, 4))
-        ax.set_facecolor(bg_color)
-        
-        plot = df[(df[t_col] >= t0) & (df[t_col] <= t1) ]
-                
-        mu1 = plot[cols].mean(axis=1)
-        sigma1 = plot[cols].std(axis=1)
-
-        #ax.plot(t, mu1, lw=2, label='mean population 1', color='blue')
-        ax.plot(plot[t_col], mu1, lw=2, )
-        ax.fill_between(plot[t_col], mu1+sigma1, mu1-sigma1, facecolor='grey', alpha=0.3, zorder=10)
-        
-        # Get actual min and max from your data
-        xmin = plot[t_col].min()
-        xmax = plot[t_col].max()
-        
-        # Calculate start and end of xticks, rounded to nearest multiples of 24
-        xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-        xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-        
-        if ent_days > 0:
-            # Example for creating banded background every 12 hours
-    
-            fig = methods.plot_entrainment(fig, plot, t_col, xtick_start, xtick_end, ent_days, order=order, T=T, color=color)
-        
-        # Generate ticks at every 24 units
-        xticks = np.arange(xtick_start, xtick_end + 1, 24)
-        plt.xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
-        plt.xlabel('Time (h)')
-        plt.ylabel(unit)
-        plt.title(f"{group} (N={len(cols)})", fontsize=15)
-        return fig
-    
-    def grouped_plot_traces(df, t_col, t0, t1, group, layout,  bg_color='white', ent=False, ent_days=0, 
-             order=0, T=24, color='white', unit='Measured unit'):
-        
-        cols = layout[layout.Condition == group]['name'].to_list()     
-        
-        fig, ax = plt.subplots(1, figsize=(10, 4))
-        ax.set_facecolor(bg_color)
-        
-        plot = df[(df[t_col] >= t0) & (df[t_col] <= t1) ]
-                
-        mu1 = plot[cols].mean(axis=1)
-        sigma1 = plot[cols].std(axis=1)
-
-        #ax.plot(t, mu1, lw=2, label='mean population 1', color='blue')
-        ax.plot(plot[t_col], mu1, lw=2, )
-        
-        for col in cols:
-            ax.plot(plot[t_col], plot[col], lw=2, alpha=0.2)
-        #ax.fill_between(plot[t_col], mu1+sigma1, mu1-sigma1, facecolor='grey', alpha=0.3, zorder=10)
-        
-        # Get actual min and max from your data
-        xmin = plot[t_col].min()
-        xmax = plot[t_col].max()
-        
-        # Calculate start and end of xticks, rounded to nearest multiples of 24
-        xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-        xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-        
-        if ent_days > 0:
-            # Example for creating banded background every 12 hours
-            fig = methods.plot_entrainment(fig, plot, t_col, xtick_start, xtick_end, ent_days, order=order, T=T, color=color)
-        
-        # Generate ticks at every 24 units
-        xticks = np.arange(xtick_start, xtick_end + 1, 24)
-        plt.xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
-        plt.xlabel('Time (h)')
-        plt.ylabel(unit)
-        plt.title(f"{group} (N={len(cols)})", fontsize=15)
-        return fig
-    
-    def double_plot(df, t_col, p_col, ent_days, T, order, t0, t1, times = 2, entrainment_data=None,
-                    bg_color='white', band_color='white', signal_color='#1F7A8C'):
-        
-        df = df[(df[t_col] >= t0) & (df[t_col] <= t1)]
-        df[t_col] = df[t_col] - t0
-        df['d'] = df[t_col].apply(lambda x: int(x/24))
-        df[p_col] = (df[p_col] - df[p_col].min()) / (df[p_col].max() - df[p_col].min())
-
-        if entrainment_data is not None:
-
-            if 'entrainment' not in entrainment_data.columns:
-                entrainment_data['entrainment'] = entrainment_data.iloc[:,-1]
-            
-            entrainment_data['entrainment'] = (entrainment_data['entrainment'] - entrainment_data['entrainment'].min()) / (entrainment_data['entrainment'].max() - entrainment_data['entrainment'].min())
-
-        days = int(np.round(df[t_col].max() / 24))
-
-        yscaling = st.checkbox('Re-scale Y axis by subset amplitude', False)
-        global_vmean = df[p_col].mean()   # robust to outliers
-        global_vmax = np.nanpercentile(df[p_col], 99)
-        
-        if days < 2:
-            st.error('This function needs more than 2 days to plot')
-            st.stop()
-
-        fig, ax = plt.subplots(days, 1, figsize=(10, days*0.5))
-        
-        for i in range(1, days+1):
-            
-            bot = (i * 24 - 24 * times) 
-            #top = (i * 24 * times)
-            #bot = (i - 1) * 24
-            top = bot + 24 * times
-            plot = df[(df[t_col].between(bot, top, inclusive='both'))]
- 
-            plot['time_col'] = plot[t_col]
-            plot['time_col'] = plot['time_col'].apply(lambda x: x- bot)
-            
-            ax[i -1 ].set_facecolor(bg_color)
-            
-            ax2 = ax[i -1 ].twinx()
-            ax2.fill_between(plot.time_col, plot[p_col], color=signal_color, zorder=10)
-            ax2.set_xlim(0, 24*times)    
-            
-            # Get the actual ylim being used for this subplot
-            if yscaling:
-                y_lo = plot[p_col].mean()
-                y_hi = np.nanpercentile(plot[p_col], 99) + np.nanpercentile(plot[p_col], 99) * 0.07#plot[p_col].mean() + plot[p_col].std() * 2
-            else:
-                y_lo = global_vmean
-                y_hi = global_vmax
-
-            ax2.set_ylim(y_lo, y_hi)
-            ax[i -1 ].set_yticks([])
-            ax2.set_yticks([])
-
-            # x-tick spacing
-            dist = {1: 6}.get(times) or (12 if times == 2 else 24)
-            
-            if i == days:
-                ax[i -1 ].set_xticks([i for i in range(0, 24*times+1, dist)])
-            else:
-                ax[i -1 ].set_xticks([])
-            
-            ax[i - 1 ].set_ylabel(f"Day {i}", rotation=0, ha='right', va='center')
-            
-            if entrainment_data is not None:
-
-                ax[i-1].set_ylim(y_lo, y_hi)
-
-                plot_entrainment = entrainment_data[(entrainment_data[t_col].between(bot, top, inclusive='both'))].copy()
-                
-                # Guard against empty slice
-                if plot_entrainment.empty:
-                    continue
-                    
-                plot_entrainment['time_col'] = plot_entrainment[t_col].apply(lambda x: x - bot)
-
-                xmin = plot['time_col'].min()
-                xmax = plot['time_col'].max()
-                ymin = entrainment_data['entrainment'].min()
-                ymax = entrainment_data['entrainment'].max()
-
-                # Guard against NaN in plot data itself
-                if any(np.isnan(v) or np.isinf(v) for v in [xmin, xmax, ymin, ymax]):
-                    continue
-
-                y_margin = (ymax - ymin) * 0.07
-                # Calculate start and end of xticks, rounded to nearest multiples of 24
-                xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-                xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-                colors = [band_color, bg_color] if order == 0 else [bg_color, band_color]
-                cmap1 = LinearSegmentedColormap.from_list("mycmap", colors)
-                ax[i -1 ].imshow(np.vstack((plot_entrainment['entrainment'],)), 
-                    extent=(plot_entrainment['time_col'].min(),
-                            plot_entrainment['time_col'].max(), 
-                            ymin, ymax), aspect='auto' ,cmap=cmap1, zorder=-2,
-                            vmin=global_vmean, vmax=global_vmax)
-                ax[i -1 ].set_ylim(ymin, ymax)
-
-        fig.subplots_adjust(hspace=0)
-        return fig
-    
-    def easy_pdf_report(figures):
-        
-        buffer = BytesIO()
-        with PdfPages(buffer) as pdf:
-            for fig in figures:
-                pdf.savefig(fig)
-                plt.close(fig)
-    
-            # Add metadata
-            d = pdf.infodict()
-            d['Title'] = 'Rhythmicity Report'
-            d['Author'] = 'Your Name'
-    
-        buffer.seek(0)
-        return buffer
-    
-    def easy_pdf_report_new(figures, page_size=(24, 8.5)):  # landscape
-        buffer = BytesIO()
-        with PdfPages(buffer) as pdf:
-            for fig in figures:
-                fig.set_size_inches(*page_size)
-                pdf.savefig(fig, bbox_inches='tight')
-                plt.close(fig)
-            d = pdf.infodict()
-            d['Title'] = 'Rhythmicity Report'
-            d['Author'] = 'CycleAnalysis'
-            #d['CreationDate'] = datetime.now()
-        buffer.seek(0)
-        return buffer
-    
-    def simple_plot(df, t_col, col, 
-                    unit='Measured unit', 
-                    bg_color='white', title=None):
-                    
-            fig, ax = plt.subplots(1, figsize=(12, 7))
-            ax.set_facecolor(bg_color)
-            #ax.plot(df[t_col], df[col])
-            sns.lineplot(df, x=t_col, y=col, ax=ax)
-            if title == None:
-                ax.set_title(col)
-            else:
-                plt.suptitle(title)
-            
-            xmin = df[t_col].min()
-            xmax = df[t_col].max()
-            
-            # callate start and end of xticks, rounded to nearest multiples of 24
-            xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-            xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-            
-            ax.set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
-            ax.set_xlabel('Time (h)')
-            ax.set_ylabel(unit)  
-            
-            return fig
-    
-    def split_plot(df, t_col, col, 
-                            ent=False, ent_days = 0, unit='Measured unit', 
-                            bg_color='white', band_color='lightblue',
-                            order=0, T=24, title=None):
-        
-            fig, ax = plt.subplots(1, 2, figsize=(20, 7))
-            for i in range(2):
-                ax[i].set_facecolor(bg_color)
-            ent_data = df[df[t_col] <= ent_days * T]
-            fr_data = df[df[t_col] >= ent_days * T]
-            ax[0].plot(ent_data[t_col], ent_data[col])
-            ax[0].set_title(f"Entrainment")
-            
-            # Get actual min and max from your data
-            xmin = ent_data[t_col].min()
-            xmax = ent_data[t_col].max()
-            
-            # Calculate start and end of xticks, rounded to nearest multiples of 24
-            xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-            xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-            
-            if ent_days > 0:
-                
-                start_time = xtick_start
-                end_time = (start_time + T * ent_days) 
-
-                num_bands = int((end_time - start_time) // (T/2)) 
-                delta = (T/2)
-                    
-                for i in range(num_bands):
-                    band_start = start_time + i * delta + T/2 * order
-                    band_end = band_start + delta 
-                    if i % 2 == 0:  # Every other band
-                        ax[0].axvspan(band_start, band_end, color=band_color, alpha=1)
-                        
-            xticks = np.arange(xtick_start, xtick_end + 1, 24)
-            ax[0].set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
-            ax[0].set_xlabel('Time (h)')
-            ax[0].set_ylabel(unit)
-            
-            # Get actual min and max from your data
-            xmin = fr_data[t_col].min()
-            xmax = fr_data[t_col].max()
-            
-            # Calculate start and end of xticks, rounded to nearest multiples of 24
-            xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-            xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-            
-            ax[1].plot(fr_data[t_col], fr_data[col])
-            ax[1].set_title(f"Free Running")
-            ax[1].set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
-            ax[1].set_xlabel('Time (h)')
-            ax[1].set_ylabel(unit)
-            
-            if title == None:
-                plt.suptitle(col)
-            else:
-                plt.suptitle(title)
-            
-            return fig
-        
-    def grouped_plot_traces_export(ax, df, t_col, t0, t1, group, layout,  bg_color='white', ent=False, ent_days=0, 
-             order=0, T=24, color='white', unit='Measured unit'):
-        
-        cols = layout[layout.Condition == group]['name'].to_list()     
-        
-        #fig, ax = plt.subplots(1, figsize=(10, 4))
-        ax.set_facecolor(bg_color)
-        
-        plot = df[(df[t_col] >= t0) & (df[t_col] <= t1) ]
-                
-        mu1 = plot[cols].mean(axis=1)
-        sigma1 = plot[cols].std(axis=1)
-
-        #ax.plot(t, mu1, lw=2, label='mean population 1', color='blue')
-        ax.plot(plot[t_col], mu1, lw=2, )
-        
-        for col in cols:
-            ax.plot(plot[t_col], plot[col], lw=2, alpha=0.2)
-        #ax.fill_between(plot[t_col], mu1+sigma1, mu1-sigma1, facecolor='grey', alpha=0.3, zorder=10)
-        
-        # Get actual min and max from your data
-        xmin = plot[t_col].min()
-        xmax = plot[t_col].max()
-        
-        # Calculate start and end of xticks, rounded to nearest multiples of 24
-        xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-        xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-        
-        if ent_days > 0:
-            # Example for creating banded background every 12 hours
-            ax = methods.plot_entrainment(ax, plot, t_col, xtick_start, xtick_end, ent_days, order=order, T=T, color=color)
-        
-        # Generate ticks at every 24 units
-        xticks = np.arange(xtick_start, xtick_end + 1, 24)
-        ax.set_xticks([i for i in range(int(xtick_start), int(xtick_end), 24)])
-        ax.set_xlabel('Time (h)')
-        ax.set_ylabel(unit)
-        ax.set_title(f"{group} (N={len(cols)})", fontsize=15, loc='left')
-        return ax
-    
-    def plot_table_on_ax(ax, df):
-        ax.axis("off")
-        table = ax.table(cellText=df.values, colLabels=df.columns, loc="center")
-        table.auto_set_font_size(False)
-        table.set_fontsize(10)
-        table.scale(1, 1.5)
-        
-    def pie_chart(ax, df, method='meta2d', group='', thresh=0.05):
-            
-            group = group.replace('_', '-')
-            cols = [col for col in df.columns if method in col]
-            q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
-            
-            significant = df[df[q_col] <= thresh]
-            
-            replicates = df.shape[0]
-            sig_replicates = significant.shape[0]
-            percent = np.round(sig_replicates / replicates * 100, 1)
-            not_sig = 100 - percent
-
-            vlag_pal = sns.color_palette('vlag', 6)
-            pal = [vlag_pal[0], vlag_pal[-1]]#['#57C4E5','#F97068']
-
-            ax.pie([percent, not_sig], labels=['Significant', 'Not significant'], 
-            autopct='%1.1f%%', colors=pal, startangle=90,
-            wedgeprops=dict(width=0.6))
-        
-    def text(ax, df, method='meta2d', group='', thresh=0.05):
-        
-        group = group.replace('_', '-')
-        cols = [col for col in df.columns if method in col]
-        per_col = 'Periods'#[col for col in cols if 'PERIOD' in col.upper()][0]
-        q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
-        
-        period = f"{np.round(df[per_col].mean(),1)} ± {np.round(df[per_col].std(),1)}"
-        significant = df[df[q_col] <= thresh]
-        
-        replicates = df.shape[0]
-        sig_replicates = significant.shape[0]
-        percent = np.round(sig_replicates / replicates * 100, 1)
-        
-        ax.axis("off")
-        formatted_text = (
-    f"$\\bf{{{group} \\,  summary:}}$\n\n"
-    f"$\\bf{{N}}$: {df.shape[0]} replicates\n"
-    f"$\\bf{{Rhythmic\\ replicates}}$: {sig_replicates}/{replicates} ({percent}%)\n"
-    f"$\\bf{{Method}}$: {method} - Significance threshold = {thresh}\n"
-    f"$\\bf{{Detected\\ period}}$: {period} h"
-)
-
-        ax.text(0, 1, formatted_text, fontsize=15, va='top', ha='left', transform=ax.transAxes)
-        
     def multicomparison(result_df, layout_df, conditions, method, thresh):
         
         sig_comparison = []
@@ -1116,9 +1223,16 @@ class methods:
             
             cols = [col for col in result_df.columns if method in col]
 
-            per_col = 'Periods'#[col for col in cols if 'PERIOD' in col.upper()][0]
-            q_col = [col for col in cols if 'BH.Q' in col.upper()][0]
-            amp_col = [col for col in cols if 'AMP' in col.upper()][0]
+            per_col = 'Periods'
+            q_cols = [col for col in cols if 'BH.Q' in col.upper()]
+            if not q_cols:
+                continue
+            q_col = q_cols[0]
+            # Not every method reports an amplitude — Tempo returns a probability,
+            # not a cosinor fit — so the amplitude comparison is skipped rather
+            # than raising IndexError on a missing column.
+            amp_cols = [col for col in cols if 'AMP' in col.upper()]
+            amp_col = amp_cols[0] if amp_cols else None
             
             table = []
             for i in [sorted_x, sorted_y]:
@@ -1130,144 +1244,23 @@ class methods:
             odds, p = fisher_exact(table, alternative='two-sided')
             t_stat_per, p_per = ttest_ind(sorted_x[per_col].values,
                                         sorted_y[per_col].values, equal_var=False)  
-            t_stat_amp, p_amp = ttest_ind(sorted_x[amp_col].values,
-                                        sorted_y[amp_col].values, equal_var=False)  
-            
             sig_comparison.append([x, y, compar, p, p < thresh, ])
             per_comparison.append([x, y, compar, p_per, p_per < thresh])
-            amp_comparison.append([x, y, compar, p_amp, p_amp < thresh])  
+            if amp_col is not None:
+                t_stat_amp, p_amp = ttest_ind(sorted_x[amp_col].values,
+                                              sorted_y[amp_col].values, equal_var=False)
+                amp_comparison.append([x, y, compar, p_amp, p_amp < thresh])
         
         summary = pd.DataFrame()
         
         for n, d in enumerate([sig_comparison, per_comparison, amp_comparison]):
+            if not d:                      # e.g. no amplitude column for this method
+                continue
             temp = pd.DataFrame(d, columns=['group1', 'group2', 'comparison', 'p-val', 'reject'])
             temp['tested'] = ['Rhythmicity', 'Period', 'Amplitude'][n]
             summary = pd.concat([summary, temp]).reset_index(drop=True)
             
         return summary
-
-    def multi_subplot():
-
-        #fig, ax = plt.subplots(days, 1, figsize=(10, days*0.5))
-        fig = plt.figure(figsize=(10, days*0.5))
-        gs = fig.add_gridspec(2, 4)  
-
-    def multi_acto(ax, df, t_col, p_col, ent_days, T, order, t0, t1, times = 2, entrainment_data=None,
-                        yscaling=False, bg_color='white', band_color='white', signal_color='#1F7A8C', title='None'):
-            
-            df = df[(df[t_col] >= t0) & (df[t_col] <= t1)]
-            df[t_col] = df[t_col] - t0
-            df['d'] = df[t_col].apply(lambda x: int(x/24))
-            df[p_col] = (df[p_col] - df[p_col].min()) / (df[p_col].max() - df[p_col].min())
-
-            days = int(np.round(df[t_col].max() / 24))
-
-            global_vmean = df[p_col].mean()   # robust to outliers
-            global_vmax = np.nanpercentile(df[p_col], 99)
-            
-            if entrainment_data is not None:
-
-                if 'entrainment' not in entrainment_data.columns:
-                    entrainment_data['entrainment'] = entrainment_data.iloc[:,-1]
-                
-                entrainment_data['entrainment'] = (entrainment_data['entrainment'] - entrainment_data['entrainment'].min()) / (entrainment_data['entrainment'].max() - entrainment_data['entrainment'].min())
-            
-            if days < 2:
-                st.error('This function needs more than 2 days to plot')
-                st.stop()
-
-            #fig, ax = plt.subplots(days, 1, figsize=(10, days*0.5))
-            if title != 'None':
-                ax[0].set_title(title)
-
-            for i in range(1, days+1):
-                
-                bot = (i * 24 - 24 * times) 
-                top = bot + 24 * times
-                plot = df[(df[t_col].between(bot, top, inclusive='both'))]
-
-                plot['time_col'] = plot[t_col]
-                plot['time_col'] = plot['time_col'].apply(lambda x: x- bot)
-                
-                ax[i -1 ].set_facecolor(bg_color)
-                ax2 = ax[i -1 ].twinx()
-
-                ax2.fill_between(plot.time_col, plot[p_col], color=signal_color)
-                ax2.set_xlim(0, 24*times)    
-                
-                # Get the actual ylim being used for this subplot
-                if yscaling:
-                    y_lo = plot[p_col].mean()
-                    y_hi = np.nanpercentile(plot[p_col], 99) + np.nanpercentile(plot[p_col], 99) * 0.07#plot[p_col].mean() + plot[p_col].std() * 2
-                else:
-                    y_lo = global_vmean
-                    y_hi = global_vmax
-
-                ax2.set_ylim(y_lo, y_hi)
-                ax[i -1 ].set_yticks([])
-                ax2.set_yticks([])
-                
-                if times == 2:
-                    dist = 12
-                elif times > 2:
-                    dist = 24
-                else:
-                    dist = 6
-                
-                if i == days:
-                    ax[i -1 ].set_xticks([i for i in range(0, 24*times+1, dist)])
-                else:
-                    ax[i -1 ].set_xticks([])
-                
-                ax[i - 1 ].set_ylabel(f"Day {i}", rotation=0, ha='right', va='center')
-                
-                days_of_entrainment = [i for i in range(1, ent_days+1)]
-                belong_to_entrainment = [i * 24 - 24 for i in plot.d.unique() if i in days_of_entrainment]
-
-                if entrainment_data is not None:
-
-                    plot_entrainment = entrainment_data[(entrainment_data[t_col].between(bot, top, inclusive='both'))].copy()
-                    
-                    # Guard against empty slice
-                    if plot_entrainment.empty:
-                        continue
-                        
-                    plot_entrainment['time_col'] = plot_entrainment[t_col].apply(lambda x: x - bot)
-
-                    xmin = plot['time_col'].min()
-                    xmax = plot['time_col'].max()
-                    ymin = entrainment_data['entrainment'].min()
-                    ymax = entrainment_data['entrainment'].max()
-
-                    # Guard against NaN in plot data itself
-                    if any(np.isnan(v) or np.isinf(v) for v in [xmin, xmax, ymin, ymax]):
-                        continue
-
-                    y_margin = (ymax - ymin) * 0.07
-
-                    # Calculate start and end of xticks, rounded to nearest multiples of 24
-                    xtick_start = (xmin // 24) * 24          # floor to nearest lower multiple of 24
-                    xtick_end = ((xmax // 24) + 1) * 24      # ceil to next multiple of 24
-
-                    colors = [band_color, bg_color] if order == 0 else [bg_color, band_color]
-                    cmap1 = LinearSegmentedColormap.from_list("mycmap", colors)
-                    ax[i -1 ].imshow(np.vstack((plot_entrainment['entrainment'],)), 
-                            extent=(plot_entrainment['time_col'].min(),
-                            plot_entrainment['time_col'].max(), 
-                            y_lo, y_hi), aspect='auto' ,cmap=cmap1, zorder=-2,
-                            vmin=global_vmean, vmax=global_vmax)
-                
-            return
-    
-    def feature_entrainment(ax, feat_data, ent_color, bg_color, lower, upper, order=0):
-
-        colors = [ent_color, bg_color] if order == 0 else [bg_color, ent_color]
-        cmap1 = LinearSegmentedColormap.from_list("mycmap", colors)
-        #plt.plot(feat_data.iloc[:, 0], feat_data.iloc[:, 1])
-        ax.imshow(np.vstack((feat_data.iloc[:, 1],)), 
-            extent=(feat_data.iloc[:, 0].min() ,feat_data.iloc[:, 0].max(), 
-                        lower, upper), aspect='auto'
-                        , cmap=cmap1, vmin=feat_data.iloc[:, 1].min(), vmax=feat_data.iloc[:, 1].max())
 
     def make_square_signal(
             delta_time=1.0,
@@ -1294,10 +1287,8 @@ class methods:
         
         data = df.copy()
 
-        times = data[t_col].value_counts()
-        n_replicates = times.unique()
-        delta_t = np.mean(np.diff(times.index))  # assumes sorted time
-        
+        delta_t = methods.sampling_interval(data[t_col].values)
+
         data['entrainment'] = methods.make_square_signal(delta_t, n_days, period, on_ratio)
         #data['entrainment'] = data['entrainment'].fillna(release)
         
@@ -1556,8 +1547,15 @@ class methods:
         Ps = np.empty((n_p, 3, n_t))
         for i in range(n_p):
             X     = Xs[i]                                     # (n_t, 3)
-            Ps[i] = np.linalg.solve(X.T @ X, X.T)            # (3, n_t)
-    
+            # pinv, not solve. At a trial period of exactly 2*dt (and its
+            # submultiples) the sine regressor is sampled at its zero crossings,
+            # so it vanishes, X.T @ X is singular and np.linalg.solve raises
+            # LinAlgError. The pseudoinverse equals (X'X)^-1 X' whenever X has
+            # full rank and degrades to a least-norm solution when it does not,
+            # so the sweep survives periods it cannot resolve instead of dying on
+            # them. Cost is negligible: 281 SVDs of a (n_t x 3) matrix.
+            Ps[i] = np.linalg.pinv(X)                        # (3, n_t)
+
         return Xs, Ps
     
     
@@ -1608,6 +1606,159 @@ class methods:
                     beta1=float(b1), beta2=float(b2))
     
     
+    # ─────────────────────────────────────────────
+    # 2b. Sine sweep — all signals, all periods, one pass
+    # ─────────────────────────────────────────────
+
+    @staticmethod
+    def sine_sweep(df, t_col, cols, period_min=2.0, period_max=30.0,
+                   period_step=0.1):
+        """
+        Fit a sinusoid at every trial period to every signal, in one batched pass.
+
+        This is the "what periods are in this dataset?" question rather than
+        "is this one trace rhythmic?". It reuses the same projection matrices as
+        `detect_rhythmicity`, but loops over periods instead of over signals, so
+        each iteration is two matrix products covering the whole dataset. A
+        transcriptome's worth of columns costs barely more than a plate's.
+
+        Returns
+        -------
+        results : DataFrame, one row per signal
+            sample, period, amplitude, phase_h, r2, rss
+            `period` is the best-fitting trial period — the value your histogram
+            was built on.
+        landscape : DataFrame, one row per trial period
+            period, mean_r2, median_r2, frac_best, n_best
+
+            `mean_r2` is the aggregate the per-signal argmax cannot show. A gene
+            whose best fit is 24 h may still carry a strong 12 h component; that
+            shows up as a secondary bump here but is invisible in a histogram of
+            best periods, because each signal contributes exactly one count at
+            its winning period.
+        """
+        cols = list(cols)
+        if not cols:
+            raise ValueError("No signals to sweep.")
+
+        t = np.asarray(df[t_col].to_numpy(), dtype=float)
+        Y = df[cols].to_numpy(dtype=float)                 # (n_t, n_signals)
+
+        finite_t = np.isfinite(t)
+        if not finite_t.all():
+            t, Y = t[finite_t], Y[finite_t]
+
+        # Gaps are filled with the signal's own mean. A mean-valued point sits on
+        # the fitted MESOR, so it neither pulls the fit nor inflates R² the way a
+        # zero-fill would; dropping whole rows instead would discard every other
+        # signal's data for one missing well.
+        n_missing = int((~np.isfinite(Y)).sum())
+        if n_missing:
+            col_means = np.nanmean(Y, axis=0)
+            col_means = np.where(np.isfinite(col_means), col_means, 0.0)
+            Y = np.where(np.isfinite(Y), Y, col_means)
+
+        if len(t) < 4:
+            raise ValueError(f"Need at least 4 timepoints to sweep, got {len(t)}.")
+
+        # Nyquist: a period shorter than twice the sampling interval cannot be
+        # resolved, whatever the fit reports. Clamp rather than let the sweep
+        # produce confident nonsense at the short end.
+        dt = float(np.median(np.diff(np.sort(np.unique(t)))))
+        nyquist = 2.0 * dt
+        clamped = None
+        if np.isfinite(nyquist) and period_min < nyquist:
+            clamped = (period_min, nyquist)
+            period_min = nyquist
+
+        periods = np.arange(period_min, period_max + period_step / 2, period_step)
+        if len(periods) < 2:
+            raise ValueError("Period range is too narrow for a sweep.")
+
+        Xs, Ps = methods.build_projection_matrices(t, periods)
+
+        ss_tot = ((Y - Y.mean(axis=0)) ** 2).sum(axis=0)    # (n_signals,)
+        safe_tot = np.where(ss_tot > 0, ss_tot, np.nan)
+
+        n_p, n_s = len(periods), Y.shape[1]
+        rss = np.empty((n_p, n_s))
+        b1 = np.empty((n_p, n_s))
+        b2 = np.empty((n_p, n_s))
+
+        for i in range(n_p):
+            B = Ps[i] @ Y                                   # (3, n_signals)
+            resid = Y - Xs[i] @ B                            # (n_t, n_signals)
+            rss[i] = np.einsum("ts,ts->s", resid, resid)
+            b1[i], b2[i] = B[0], B[1]
+
+        with np.errstate(invalid="ignore", divide="ignore"):
+            r2 = 1.0 - rss / safe_tot                        # (n_p, n_signals)
+
+        best = np.argmin(rss, axis=0)                        # (n_signals,)
+        take = (best, np.arange(n_s))
+        best_b1, best_b2 = b1[take], b2[take]
+        best_period = periods[best]
+        phase_rad = np.arctan2(-best_b2, best_b1)
+        phase_h = (phase_rad % (2 * np.pi)) / (2 * np.pi) * best_period
+
+        results = pd.DataFrame({
+            "sample": cols,
+            "period": best_period,
+            "amplitude": np.sqrt(best_b1 ** 2 + best_b2 ** 2),
+            "phase_h": phase_h,
+            "r2": r2[take],
+            "rss": rss[take],
+        })
+        if n_missing:
+            results.attrs["n_missing_filled"] = n_missing
+        if clamped:
+            results.attrs["nyquist_clamped"] = clamped
+
+        counts = np.bincount(best, minlength=n_p).astype(float)
+        # A flat signal has zero total variance, so its R² is NaN by construction
+        # at every period. That is the honest answer, and it is expected here —
+        # no need to warn about the all-NaN slice it produces.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            mean_r2 = np.nanmean(r2, axis=1)
+            median_r2 = np.nanmedian(r2, axis=1)
+        landscape = pd.DataFrame({
+            "period": periods,
+            "mean_r2": mean_r2,
+            "median_r2": median_r2,
+            "n_best": counts.astype(int),
+            "frac_best": counts / max(n_s, 1),
+        })
+        return results, landscape
+
+    @staticmethod
+    def sweep_peaks(landscape, column="mean_r2", n_peaks=5, prominence_frac=0.02):
+        """
+        Dominant periods in a sweep landscape, strongest first.
+
+        Prominence is scaled to the landscape's own range rather than fixed, so
+        the same setting works for a dataset where everything fits well and one
+        where nothing does.
+        """
+        y = np.asarray(landscape[column], dtype=float)
+        x = np.asarray(landscape["period"], dtype=float)
+        if len(y) < 3 or not np.isfinite(y).any():
+            return pd.DataFrame(columns=["period", column, "prominence"])
+
+        span = np.nanmax(y) - np.nanmin(y)
+        prom = max(span * prominence_frac, 1e-9)
+        idx, props = signal.find_peaks(np.nan_to_num(y, nan=np.nanmin(y)),
+                                       prominence=prom)
+        if len(idx) == 0:
+            return pd.DataFrame(columns=["period", column, "prominence"])
+
+        out = pd.DataFrame({
+            "period": x[idx],
+            column: y[idx],
+            "prominence": props["prominences"],
+        }).sort_values("prominence", ascending=False).head(n_peaks)
+        return out.reset_index(drop=True)
+
     # ─────────────────────────────────────────────
     # 3. F-test
     # ─────────────────────────────────────────────
@@ -1682,16 +1833,26 @@ class methods:
         """
         Benjamini-Hochberg FDR correction. Returns q-values.
         """
+        # NaN-safe. A single NaN p-value otherwise makes EVERY q NaN: argsort puts
+        # NaN last, the reversal puts it first, and minimum.accumulate carries it
+        # across the whole array. NaNs are held out and returned as NaN.
         pvalues = np.asarray(pvalues, dtype=float)
-        m       = len(pvalues)
-        order   = np.argsort(pvalues)
+        out     = np.full(pvalues.shape, np.nan)
+        ok      = np.isfinite(pvalues)
+        m       = int(ok.sum())
+        if m == 0:
+            return out
+
+        p_ok    = pvalues[ok]
+        order   = np.argsort(p_ok)
         ranks   = np.empty(m, dtype=int)
         ranks[order] = np.arange(1, m + 1)
-        qvalues = np.minimum(1.0, pvalues * m / ranks)
-        qvalues = np.minimum.accumulate(
-            qvalues[order][::-1]
-        )[::-1][np.argsort(order)]
-        return qvalues
+        qvalues = np.minimum(1.0, p_ok * m / ranks)
+        qvalues = np.minimum.accumulate(qvalues[order][::-1])[::-1]
+        q_ok    = np.empty(m)
+        q_ok[order] = qvalues
+        out[ok] = q_ok
+        return out
     
     
     # ─────────────────────────────────────────────

@@ -1,4 +1,14 @@
-# chronotopia
+# Chronotopia
+
+**Version 0.8.0** · [Documentation](https://borfebor.github.io/chronotopia/) ·
+[Release notes](RELEASE_NOTES.md) · [How to cite](CITATION.cff)
+
+Analysis of time-course data for circadian biology: preprocessing, period
+estimation, rhythmicity testing, ~108 features per sample, plate-format analysis
+and publication-ready figures.
+
+## Running it
+
 
 1. Ensure [Docker](www.docker.com/get-started) is Installed and Running
 Make sure you have Docker installed on your system and that the Docker daemon is running.

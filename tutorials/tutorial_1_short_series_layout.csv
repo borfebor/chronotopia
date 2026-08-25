@@ -1,0 +1,25 @@
+Sample,Condition
+ARNTL,Core clock
+CLOCK,Core clock
+NPAS2,Core clock
+PER1,Core clock
+PER2,Core clock
+PER3,Core clock
+CRY1,Core clock
+CRY2,Core clock
+NR1D1,Core clock
+NR1D2,Core clock
+DBP,Clock-controlled
+TEF,Clock-controlled
+HLF,Clock-controlled
+CIART,Clock-controlled
+RORA,Clock-controlled
+WEE1,Clock-controlled
+SLC2A1,Clock-controlled
+PPARGC1A,Clock-controlled
+ACTB,Non-rhythmic
+GAPDH,Non-rhythmic
+TUBB,Non-rhythmic
+RPL13A,Non-rhythmic
+B2M,Non-rhythmic
+HPRT1,Non-rhythmic

@@ -137,6 +137,7 @@ def _cosinor_model(t, A, phi, mesor, T):
 # ── package colour palette (for plots) ───────────────────────────────────────
 _PKG_COLORS = {
     "cosinor":       "#1D9E75",
+    "damped_cosinor": "#0E7C5A",
     "waveform":      "#E85D24",
     "cycles":        "#185FA5",
     "baseline":      "#BA7517",
@@ -206,6 +207,12 @@ class ChronotopiaFeatureExtractor:
         """Return the packages applicable to this recording."""
         pkgs = ["cosinor", "waveform", "cycles", "baseline",
                 "harmonic", "noise", "lomb_scargle"]
+        # A damped sinusoid has five free parameters. On a short recording the
+        # damping and the amplitude trade off against each other and neither is
+        # identifiable, so the package is routed away for the same reason
+        # wavelet_ridge is.
+        if not self.is_short:
+            pkgs.append("damped_cosinor")
         if not self.is_short and _HAS_PYBOAT:
             pkgs.append("wavelet_ridge")
         return pkgs
@@ -232,6 +239,7 @@ class ChronotopiaFeatureExtractor:
 
         dispatch = {
             "cosinor":       self._pkg_cosinor,
+            "damped_cosinor": self._pkg_damped_cosinor,
             "waveform":      self._pkg_waveform,
             "cycles":        self._pkg_cycles,
             "baseline":      self._pkg_baseline,
@@ -381,6 +389,106 @@ class ChronotopiaFeatureExtractor:
 
         self._cache["cosinor"] = out
         return out
+
+    def _pkg_damped_cosinor(self) -> dict:
+        """
+        Cosinor with the damping written into the model rather than removed first.
+
+        Fits  A * exp(-t/tau) * cos(2*pi*t/T + phi) + C.
+
+        Why this exists next to `cosinor`. A plain cosinor assumes constant
+        amplitude, so on a decaying rhythm it splits the difference: the amplitude
+        it reports belongs to no particular time, and the decay leaks into the
+        residual and depresses r2. Detrending the envelope away first (the "Rolling
+        Hilbert" route) fixes the fit and destroys the very quantity you wanted.
+        Fitting the decay recovers both — and because the model is parametric,
+        every parameter comes with a standard error, which no envelope method and
+        no periodogram provides.
+
+        Features
+        --------
+        period            Period of the fitted damped cosine (hours)
+        period_se         Standard error on that period
+        amplitude         Amplitude at the START of the window, before decay
+        acrophase_h       Time of the first peak (hours into the period)
+        damping_tau       Time constant of the decay (hours). Large = little damping
+        damping_tau_se    Standard error on tau — how well damping is pinned down
+        half_life         Time for the amplitude to halve, tau * ln 2
+        r2                Variance explained. Check it: this model assumes ONE
+                          damped sinusoid, so a drifting period or a strongly
+                          non-sinusoidal waveform shows up here as a poor fit
+        """
+        if "damped_cosinor" in self._cache:
+            return self._cache["damped_cosinor"]
+
+        fail = {"period": np.nan, "period_se": np.nan, "amplitude": np.nan,
+                "acrophase_h": np.nan, "damping_tau": np.nan,
+                "damping_tau_se": np.nan, "half_life": np.nan, "r2": np.nan}
+
+        t, x = self.time, self.signal
+        t0 = t - t[0]
+        span = float(t0[-1])
+
+        # Centre the period search on whatever the periodogram already found, and
+        # bound it generously around that. A free T wanders into a fraction or a
+        # multiple of the real period on a noisy well.
+        T_seed = self._pkg_lomb_scargle().get("peak_period_h", np.nan)
+        if not np.isfinite(T_seed) or T_seed <= 0:
+            T_seed = 24.0
+        T_lo, T_hi = 0.6 * T_seed, 1.7 * T_seed
+
+        def model(x_, A, tau, T, phi, C):
+            return A * np.exp(-x_ / max(tau, 1e-6)) * np.cos(
+                2 * np.pi * x_ / max(T, 1e-6) + phi) + C
+
+        p0 = [(np.max(x) - np.min(x)) / 2 or 1.0, span, float(T_seed), 0.0,
+              float(np.mean(x))]
+        bounds = ([0, 1e-3, T_lo, -2 * np.pi, -np.inf],
+                  [np.inf, 1e6, T_hi, 2 * np.pi, np.inf])
+
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                popt, pcov = curve_fit(model, t0, x, p0=p0, bounds=bounds,
+                                       maxfev=40000)
+            A, tau, T, phi, C = popt
+            se = np.sqrt(np.abs(np.diag(pcov)))
+            resid = x - model(t0, *popt)
+            ss_tot = float(np.sum((x - np.mean(x)) ** 2))
+            out = {
+                "period": float(T),
+                "period_se": float(se[2]),
+                "amplitude": float(abs(A)),
+                "acrophase_h": float(((-phi) % (2 * np.pi)) / (2 * np.pi) * T),
+                "damping_tau": float(tau),
+                "damping_tau_se": float(se[1]),
+                "half_life": float(tau * np.log(2)),
+                "r2": float(1 - np.sum(resid ** 2) / ss_tot) if ss_tot > 0 else np.nan,
+            }
+        except Exception:
+            out = dict(fail)
+
+        self._cache["damped_cosinor"] = out
+        return out
+
+    def plot_damped_cosinor(self, ax: plt.Axes, color: str | None = None,
+                            label: bool = True):
+        """Overlay the fitted damped cosine and the envelope it implies."""
+        f = self._pkg_damped_cosinor()
+        if not np.isfinite(f.get("period", np.nan)):
+            return
+        color = color or _PKG_COLORS["damped_cosinor"]
+        t0 = self.time - self.time[0]
+        tau, T, A = f["damping_tau"], f["period"], f["amplitude"]
+        phi = -f["acrophase_h"] / T * 2 * np.pi
+        env = A * np.exp(-t0 / max(tau, 1e-6))
+        mesor = float(np.mean(self.signal))
+        ax.plot(self.time, env * np.cos(2 * np.pi * t0 / T + phi) + mesor,
+                color=color, lw=1.4,
+                label=f"damped cosinor (t1/2 {f['half_life']:.0f} h)" if label else None)
+        for sign in (1, -1):
+            ax.plot(self.time, mesor + sign * env, color=color, lw=1.0, ls="--",
+                    alpha=0.7)
 
     def plot_cosinor(self, ax: plt.Axes, color: str | None = None, label: bool = True):
         """
@@ -1438,6 +1546,7 @@ R2 to sin: {waveform['waveform_r2_vs_sinusoid']:.2f}
 
         for pkg, meth in [
             ("cosinor",  self.plot_cosinor),
+            ("damped_cosinor", self.plot_damped_cosinor),
             ("waveform", self.plot_waveform),
             ("cycles",   self.plot_cycles),
             ("noise",    self.plot_noise),

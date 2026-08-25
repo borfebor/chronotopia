@@ -9,6 +9,8 @@ from datetime import datetime
 from matplotlib.backends.backend_pdf import PdfPages
 import streamlit as st
 
+import plots
+
 
 class RhythmicityReport:
     """
@@ -97,37 +99,122 @@ class RhythmicityReport:
         self.file_name = file_name
         self.figures = []
 
+        # ── What this report is actually able to say ─────────────────────────
+        # Every section consults these instead of touching result_df directly.
+        # Previously the builders assumed an analysis had been run: opening the
+        # report before pressing "Run analysis" raised
+        # AttributeError: 'NoneType' object has no attribute 'columns'.
+        self.has_results = (
+            result_df is not None and getattr(result_df, "empty", True) is False
+        )
+        self.q_col = self._find_q_col()
+        # ML columns are only present when Tempo was the selected method. It used
+        # to run on every analysis and be appended to whatever else was chosen,
+        # so the report always carried a second, unrequested verdict.
+        self.has_ml = bool(
+            self.has_results and "probability_rhythmic" in self.result_df.columns
+        )
+        self.is_ml_method = str(method or "").lower().startswith("tempo")
+        self.has_periods = bool(
+            self.has_results and "Periods" in self.result_df.columns
+        )
+
     # ------------------------------------------------------------------ #
     #  Private helpers                                                     #
     # ------------------------------------------------------------------ #
 
-    def _get_sample_title(self, col):
+    def _find_q_col(self):
+        """The significance column for the selected method, or None."""
+        if not getattr(self, "has_results", False) or not self.method:
+            return None
+        candidates = [c for c in self.result_df.columns if self.method in c]
+        q = [c for c in candidates if "BH.Q" in c.upper()]
+        return q[0] if q else None
+
+    @staticmethod
+    def _fmt_q(q):
+        """q-values at sensible precision. 0.9133333333333333 helps nobody."""
+        if q is None or not np.isfinite(q):
+            return None
+        if q < 1e-4:
+            return "q < 0.0001"
+        if q < 1e-3:
+            return f"q = {q:.1e}"
+        return f"q = {q:.3f}"
+
+    @staticmethod
+    def _fmt_pct(p):
+        if p is None or not np.isfinite(p):
+            return None
+        return f"{p * 100:.0f}%"
+
+    def _sample_facts(self, col):
         """
-        Build the per-sample subplot title string from result_df.
-        Returns just the col name if result_df is not available.
+        (verdict, list of short fact strings) for one sample.
+
+        Returns ("", []) when no analysis has been run, so callers can fall back
+        to just the sample name rather than branching on result_df themselves.
         """
-        if self.result_df is None:
-            return col
+        if not self.has_results:
+            return "", []
 
         focus = self.result_df[self.result_df["CycID"] == col]
         if focus.empty:
+            return "", []
+
+        facts, verdict = [], ""
+
+        if self.has_periods and np.isfinite(focus["Periods"].mean()):
+            facts.append(f"τ {focus['Periods'].mean():.1f} h")
+
+        if self.is_ml_method and self.has_ml:
+            pct = self._fmt_pct(focus["probability_rhythmic"].mean())
+            conf = focus["confidence"].values[0] if "confidence" in focus else None
+            if pct:
+                facts.append(f"P {pct}" + (f" ({conf})" if conf else ""))
+            if "is_rhythmic" in focus:
+                verdict = "rhythmic" if bool(focus["is_rhythmic"].values[0]) else "arrhythmic"
+        elif self.q_col is not None:
+            q = focus[self.q_col].mean()
+            qs = self._fmt_q(q)
+            if qs:
+                facts.append(qs)
+            if np.isfinite(q):
+                verdict = "rhythmic" if q <= self.thresh else "arrhythmic"
+
+        return verdict, facts
+
+    def _get_sample_title(self, col):
+        """
+        Two lines at most: the sample name, then the numbers that matter.
+
+        This used to be five lines carrying the period, the raw q-value, the
+        reject flag, the threshold, a separate ML verdict and an unformatted
+        probability (0.9133333333333333). In a grid of panels the titles were
+        taller than the plots.
+        """
+        verdict, facts = self._sample_facts(col)
+        if not facts and not verdict:
             return col
+        tail = " · ".join(facts + ([verdict] if verdict else []))
+        return f"{col}\n{tail}"
 
-        result_cols = [c for c in focus.columns if self.method in c]
-        per_col = "Periods"
-        q_col = [c for c in result_cols if "BH.Q" in c.upper()][0]
+    def _draw_entrainment(self, ax):
+        """
+        Zeitgeber shading on one axes.
 
-        q = np.round(focus[q_col].mean(), 5)
-        reject = q <= self.thresh
-        period = f"{focus[per_col].mean():.1f}"
-        
-        veredict = "Rhythmic" if focus.is_rhythmic.values[0] == True else "Arrhythmic"
-        
-        return (
-            f"{col}.\nPeriod: {period} h. q-value: {q} ({self.method} tested)."
-            f"\nReject: {reject} (Sig. thresh = {self.thresh})"
-            f"\nModel evaluation: {veredict}"
-            f"\nProbability: {focus['probability_rhythmic'].mean()} (Confidence: {focus['confidence'].values[0]})"
+        Every panel that shows a trace against absolute time gets this. The
+        per-sample grids inside `add_group_traces` drew raw traces with no
+        shading at all, so a plate under entrainment looked free-running.
+        """
+        if self.ent_days is None or self.ent_days <= 0:
+            return
+        xmin = self.df[self.t_col].min()
+        xmax = self.df[self.t_col].max()
+        plots.plot_entrainment_ax(
+            ax, self.df, self.t_col,
+            (xmin // 24) * 24, ((xmax // 24) + 1) * 24,
+            self.ent_days, order=self.order, T=self.T, color=self.ent_color,
         )
 
     def _make_grid(self, N, scale_w=4, scale_h=3):
@@ -202,14 +289,10 @@ class RhythmicityReport:
         One-page overview: rhythmicity rate and median period per condition.
         Only built when both layout_df and result_df are available.
         """
-        if self.layout_df is None or self.result_df is None:
+        if self.layout_df is None or not self.has_results:
             return None
-
-        result_cols = [c for c in self.result_df.columns if self.method in c]
-        q_col = [c for c in result_cols if "BH.Q" in c.upper()]
-        if not q_col:
+        if self.q_col is None and not self.has_ml:
             return None
-        q_col = q_col[0]
 
         summary = []
         for cond in self.layout_df.Condition.unique():
@@ -217,17 +300,24 @@ class RhythmicityReport:
             sub = self.result_df[self.result_df["CycID"].isin(names)]
             if sub.empty:
                 continue
-            rhythmic = (sub[q_col] < self.thresh).sum()
-            rhythmic_ML = (sub['probability_rhythmic'] > 0.5).sum()
-            summary.append({
+
+            if self.is_ml_method and self.has_ml:
+                rhythmic = int((sub["probability_rhythmic"] > 0.5).sum())
+                label = "Rhythmic (Tempo) (%)"
+            else:
+                rhythmic = int((sub[self.q_col] <= self.thresh).sum())
+                label = f"Rhythmic ({self.method}) (%)"
+
+            row = {
                 "Condition": cond,
                 "N": len(sub),
                 "Rhythmic (n)": rhythmic,
-                "Rhythmic (statistics) (%)": f"{100 * rhythmic / len(sub):.0f}%",
-                "Rhythmic (model) (%)": f"{100 * rhythmic_ML / len(sub):.0f}%",
-                "Median Period (h)": f"{sub['Periods'].median():.1f}",
-                "Mean Period (h)": f"{sub['Periods'].mean():.1f}",
-            })
+                label: f"{100 * rhythmic / len(sub):.0f}%",
+            }
+            if self.has_periods:
+                row["Median Period (h)"] = f"{sub['Periods'].median():.1f}"
+                row["Mean Period (h)"] = f"{sub['Periods'].mean():.1f}"
+            summary.append(row)
 
         if not summary:
             return None
@@ -289,7 +379,7 @@ class RhythmicityReport:
                 if self.layout_df is not None
                 else condition
             )
-            self.methods.phase_plot(
+            plots.phase_plot(
                 self.phases, ax, self.phases.loc[group],
                 pal=[self.bg_color, self.ent_color], order=self.order,
             )
@@ -301,12 +391,15 @@ class RhythmicityReport:
         return self
 
     def add_period_estimation(self):
-        if self.result_df is None:
+        if not self.has_results or not self.has_periods:
             return self
 
         res = self.result_df.set_index("CycID")
         mix = res.copy()
-        hue_unit = "reject"
+        # `reject` is written by the analysis run. A result table that lacks it
+        # (e.g. loaded from an older export) must not take the report down.
+        has_reject = "reject" in mix.columns
+        hue_unit = "reject" if has_reject else None
         rows = self.result_df.shape[0]
 
         if self.layout_df is not None:
@@ -320,8 +413,14 @@ class RhythmicityReport:
         if self.layout_df is not None:
             fig, axes = plt.subplots(1, 2, figsize=(8, rows), layout="constrained")
             for n, ax in enumerate(axes):
-                plot_data = mix[mix.reject == True] if n == 1 else mix
-                title = "Only rhythmic" if n == 1 else "All samples"
+                only_rhythmic = n == 1 and has_reject
+                plot_data = mix[mix["reject"] == True] if only_rhythmic else mix
+                title = "Only rhythmic" if only_rhythmic else "All samples"
+                if plot_data.empty:
+                    ax.axis("off")
+                    ax.text(0.5, 0.5, "No rhythmic samples", ha="center", va="center",
+                            transform=ax.transAxes, color="gray")
+                    continue
                 sns.pointplot(
                     plot_data, y="Condition", x=per_col, hue=hue_unit,
                     ax=ax, capsize=0.2,
@@ -335,7 +434,7 @@ class RhythmicityReport:
         else:
             fig, _ = plt.subplots(1, 1, figsize=(4, rows / 2), layout="tight")
             sns.pointplot(
-                mix, y=mix.index, x=per_col, join=False, hue=hue_unit,
+                mix, y=mix.index, x=per_col, hue=hue_unit,
                 markeredgecolor="k", markeredgewidth=1, alpha=0.7,
             ).set(xlim=(self.period_len_min, self.period_len_max), ylabel="")
 
@@ -349,6 +448,8 @@ class RhythmicityReport:
     def add_pie_charts(self):
         if not self.conditions or self.layout_df is None:
             return self
+        if not self.has_results or self.q_col is None:
+            return self
 
         N = len(self.conditions)
         fig, flat_axes, _, _ = self._make_grid(N)
@@ -357,7 +458,7 @@ class RhythmicityReport:
             ax = flat_axes[n]
             sorter = self.layout_df[self.layout_df.Condition == group]["name"].unique()
             sorted_result = self.result_df[self.result_df["CycID"].isin(sorter)]
-            self.methods.pie_chart(
+            plots.pie_chart(
                 ax, sorted_result, method=self.method,
                 group=group, thresh=self.thresh,
             )
@@ -371,7 +472,11 @@ class RhythmicityReport:
         return self
 
     def add_pie_charts_model(self):
+        # Only when Tempo was the selected method. This page used to appear in
+        # every report, presenting a second verdict nobody asked for.
         if not self.conditions or self.layout_df is None:
+            return self
+        if not (self.has_ml and self.is_ml_method):
             return self
 
         vlag_pal = sns.color_palette('vlag', 6)
@@ -415,6 +520,8 @@ class RhythmicityReport:
 
     def add_statistical_comparisons(self):
         if not self.conditions or self.sum_stats is None or self.layout_df is None:
+            return self
+        if not self.has_results:
             return self
 
         result_cols = [c for c in self.result_df.columns if self.method in c]
@@ -523,54 +630,47 @@ class RhythmicityReport:
         xticks = list(range(int(xtick_start), int(xtick_end), 24))
 
 
-        result_cols = [c for c in self.result_df.columns if self.method in c]
-        q_col = [c for c in result_cols if "BH.Q" in c.upper()]
-        if not q_col:
-            return None
-        q_col = q_col[0]
-        
         for n, group in enumerate(self.conditions):
-            # --- overview trace (with optional stats text panel) ---
-            if self.result_df is not None:
+            plots.grouped_plot_traces_export(
+                ax[n], self.df, self.t_col, self.t0, self.t1,
+                group=group, layout=self.layout_df,
+                bg_color=self.bg_color, ent=self.ent,
+                ent_days=self.ent_days, order=self.order,
+                T=self.T, color=self.ent_color, unit=self.unit,
+            )
 
-                self.methods.grouped_plot_traces_export(
-                    ax[n], self.df, self.t_col, self.t0, self.t1,
-                    group=group, layout=self.layout_df,
-                    bg_color=self.bg_color, ent=self.ent,
-                    ent_days=self.ent_days, order=self.order,
-                    T=self.T, color=self.ent_color, unit=self.unit,
+            # Numbers only if there are numbers. This block used to run
+            # unconditionally and was the crash when no analysis had been run.
+            if not self.has_results:
+                continue
+
+            sorter = self.layout_df[self.layout_df.Condition == group]["name"].unique()
+            sorted_result = self.result_df[self.result_df["CycID"].isin(sorter)]
+            if sorted_result.empty:
+                continue
+
+            lines = []
+            if self.is_ml_method and self.has_ml:
+                pct = 100 * (sorted_result["probability_rhythmic"] > 0.5).sum() / len(sorted_result)
+                lines.append(f"$\\bf{{Rhythmic}}$: {pct:.0f}% of {len(sorted_result)} (Tempo)")
+            elif self.q_col is not None:
+                pct = 100 * (sorted_result[self.q_col] <= self.thresh).sum() / len(sorted_result)
+                lines.append(f"$\\bf{{Rhythmic}}$: {pct:.0f}% of {len(sorted_result)} ({self.method})")
+            if self.has_periods and np.isfinite(sorted_result["Periods"].mean()):
+                lines.append(
+                    f"$\\bf{{\\tau}}$: {sorted_result['Periods'].mean():.1f} "
+                    f"± {sorted_result['Periods'].std():.1f} h"
                 )
-                sorter = self.layout_df[
-                    self.layout_df.Condition == group
-                ]["name"].unique()
-                sorted_result = self.result_df[
-                    self.result_df["CycID"].isin(sorter)
-                ]
-
-                rhythmic = (sorted_result[q_col] < self.thresh).sum()
-                rhythmic_ML = (sorted_result['probability_rhythmic'] > 0.5).sum()
-                rtm_stats = 100 * rhythmic / len(sorted_result)
-                rtm_ML = 100 * rhythmic_ML / len(sorted_result)
-
-                info_text = (
-    f"$\\bf{{stats}}$: {rtm_stats:.1f}% | $\\bf{{ML}}$: {rtm_ML:.1f}%\n"
-    f"$\\bf{{Τ}}$: {sorted_result['Periods'].mean():.2f} ± {sorted_result['Periods'].std():.2f} h"
-)
-                ax[n].annotate(info_text, xy=(0.95, 0.95), xycoords='axes fraction', 
-                ha='right', va='top', 
-                bbox=dict(boxstyle='round,pad=0.5', fc='white', ec='gray', alpha=0.8), fontsize=10)
-
-            else:
-                self.methods.grouped_plot_traces_export(
-                    ax[n], self.df, self.t_col, self.t0, self.t1,
-                    group=group, layout=self.layout_df,
-                    bg_color=self.bg_color, ent=self.ent,
-                    ent_days=self.ent_days, order=self.order,
-                    T=self.T, color=self.ent_color, unit=self.unit,
+            if lines:
+                ax[n].annotate(
+                    "\n".join(lines), xy=(0.98, 0.97), xycoords="axes fraction",
+                    ha="right", va="top", fontsize=9,
+                    bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="#CFCFCB", alpha=0.85),
                 )
 
         self._hide_unused(fig, ax, N)
         self.figures.append(fig)
+        return self
 
 
     def add_group_traces(self):
@@ -580,11 +680,11 @@ class RhythmicityReport:
 
         for group in self.conditions:
             # --- overview trace (with optional stats text panel) ---
-            if self.result_df is not None:
+            if self.has_results and self.q_col is not None:
                 fig, ax = plt.subplots(
-                    2, 1, figsize=(10, 7), height_ratios=(1, 2)
+                    2, 1, figsize=(10, 6.5), height_ratios=(1, 5)
                 )
-                self.methods.grouped_plot_traces_export(
+                plots.grouped_plot_traces_export(
                     ax[1], self.df, self.t_col, self.t0, self.t1,
                     group=group, layout=self.layout_df,
                     bg_color=self.bg_color, ent=self.ent,
@@ -597,13 +697,13 @@ class RhythmicityReport:
                 sorted_result = self.result_df[
                     self.result_df["CycID"].isin(sorter)
                 ]
-                self.methods.text(
+                plots.text(
                     ax[0], sorted_result,
                     method=self.method, group=group, thresh=self.thresh,
                 )
             else:
                 fig, ax_single = plt.subplots(1, figsize=(10, 4))
-                self.methods.grouped_plot_traces_export(
+                plots.grouped_plot_traces_export(
                     ax_single, self.df, self.t_col, self.t0, self.t1,
                     group=group, layout=self.layout_df,
                     bg_color=self.bg_color, ent=self.ent,
@@ -626,8 +726,10 @@ class RhythmicityReport:
 
             for n, subgroup in enumerate(names):
                 ax = flat_axes[n]
+                ax.set_facecolor(self.bg_color)
                 ax.plot(self.df[self.t_col], self.df[subgroup])
-                ax.set_title(self._get_sample_title(subgroup), loc='left')
+                self._draw_entrainment(ax)
+                ax.set_title(self._get_sample_title(subgroup), loc='left', fontsize=10)
                 ax.set_xlabel("Time (h)")
                 ax.set_ylabel(self.unit)
                 ax.set_xticks(xticks)
@@ -644,7 +746,7 @@ class RhythmicityReport:
             title = self._get_sample_title(col)
 
             if self.ent_days > 0:
-                fig = self.methods.split_plot(
+                fig = plots.split_plot(
                     self.df, self.t_col, col,
                     ent=self.ent, ent_days=self.ent_days,
                     unit=self.unit, bg_color=self.bg_color,
@@ -652,7 +754,7 @@ class RhythmicityReport:
                     T=self.T, title=title,
                 )
             else:
-                fig = self.methods.simple_plot(
+                fig = plots.simple_plot(
                     self.df, self.t_col, col, title=title
                 )
             self.figures.append(fig)
@@ -681,7 +783,7 @@ class RhythmicityReport:
             self.add_phase_plots()
 
         # Section: Period estimation
-        if self.result_df is not None:
+        if self.has_results and self.has_periods:
             self.figures.append(self._make_section_page("Period Estimation"))
             self.add_period_estimation()
 
@@ -689,7 +791,7 @@ class RhythmicityReport:
         if self.conditions:
             self.add_conditions_overview()
             self.figures.append(self._make_section_page("Group Results"))
-            if self.result_df is not None:
+            if self.has_results:
                 self.add_pie_charts()
                 self.add_pie_charts_model()
             if self.sum_stats is not None:

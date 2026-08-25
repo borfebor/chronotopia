@@ -7,5 +7,12 @@ seaborn
 statsmodels
 pyboat
 astropy
-scikit-learn
+# Pinned: ML_classifier/rhythmicity_classifier.pkl was trained with 1.8.0 (the
+# version string is embedded in the pickle). Unpickling a Random Forest under a
+# different scikit-learn first warns, then eventually fails outright.
+# Re-train the model before changing this line.
+scikit-learn==1.8.0
+# Used directly by methods.detect_rhythmicity (Parallel/delayed). It arrives
+# transitively via scikit-learn today, but that is not a guarantee.
+joblib
 rpy2==3.5.1
