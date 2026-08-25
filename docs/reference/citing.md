@@ -73,3 +73,19 @@ generator rather than redistributing the CSVs:
 
 Every planted parameter is recorded in the `_truth.csv` files shipped alongside,
 so a benchmark against them is checkable by anyone.
+
+---
+
+## Licence
+
+Chronotopia is free software under the **GNU General Public License v3 or
+later**. You may use, study, modify and redistribute it; if you distribute a
+modified version, you must do so under the same terms and make the source
+available.
+
+The licence is constrained rather than chosen: pyBOAT, used for the wavelet
+analysis, is GPL-3.0-or-later, so the combined work must be distributed under
+compatible terms.
+
+Copyright (C) 2026 Borja Ferrero-Bordera, Ludwig-Maximilians-Universität
+München, and the John Innes Centre.

@@ -147,7 +147,7 @@ baseline without eating into the rhythm.
 
 Leave **Baseline removal** on *Subtract* for now. Switching it to *Divide* is the
 right call if you are going to report amplitude or damping from these traces, and
-[Preprocessing](../reference/preprocessing.md) explains why: the baseline here is
+[Preprocessing](../preprocessing.md) explains why: the baseline here is
 a multiplying factor, so subtracting it leaves the rhythm looking like it damps
 about 1.5x faster than it does.
 

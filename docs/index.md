@@ -44,7 +44,7 @@ a 96-well plate at ten-minute resolution.
     ~100 numbers per sample across nine packages, each one named, grouped by
     concept, and checked for redundancy before you use it.
 
-- :material-tune: **[Preprocessing](reference/preprocessing.md)**
+- :material-tune: **[Preprocessing](preprocessing.md)**
 
     Every detrending method, what each one costs, and why subtracting a
     multiplicative baseline invents damping that is not there.
@@ -55,7 +55,7 @@ a 96-well plate at ten-minute resolution.
 
 ## What it does
 
-**[Preprocessing](reference/preprocessing.md)** — smoothing (rolling mean,
+**[Preprocessing](preprocessing.md)** — smoothing (rolling mean,
 Savitzky-Golay, DCT, resampling), normalisation (z-score, sample-wise and global
 min-max), and detrending: six baseline estimators (linear, cubic, rolling mean,
 running median, sinc low-pass, exponential fit) that you can either subtract or

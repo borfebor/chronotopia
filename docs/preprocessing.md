@@ -26,7 +26,7 @@ divide by it. This decides what kind of thing you think the baseline *is*.
 The second choice is the one people skip, and on bioluminescence data it is the one
 that matters more.
 
-![Five ways to estimate the same baseline](../assets/figures/pp-baselines.svg)
+![Five ways to estimate the same baseline](assets/figures/pp-baselines.svg)
 
 <p class="figure-caption" markdown>
 The same well, five estimators. The rolling mean and LOESS both track the decay
@@ -100,7 +100,7 @@ the whole signal, oscillation included. Subtract the baseline and the residual i
 still multiplied by a falling one, so the rhythm looks like it is damping faster
 than it is.
 
-![Subtracting a multiplicative baseline invents damping](../assets/figures/pp-subtract-vs-divide.svg)
+![Subtracting a multiplicative baseline invents damping](assets/figures/pp-subtract-vs-divide.svg)
 
 <p class="figure-caption" markdown>
 One well from tutorial 2, where the generator plants damping with τ = 142 h. The
@@ -199,4 +199,4 @@ handle the noise in the model rather than in the trace.
 ---
 
 Every control named on this page is also listed, with the exact text the app shows
-in its tooltip, in the [control reference](controls.md).
+in its tooltip, in the [control reference](reference/controls.md).

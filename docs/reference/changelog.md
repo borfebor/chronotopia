@@ -18,7 +18,7 @@ the baseline is *estimated*; a new `Baseline removal` control picks whether it i
 factor, so subtracting it leaves the rhythm looking like it damps far faster than
 it does — on the long-series tutorial, where damping is planted at 120–165 h,
 subtraction reports 89–94 h and division 161 h. See
-[Preprocessing](preprocessing.md).
+[Preprocessing](../preprocessing.md).
 
 **Detrending estimators: LOESS added, the menu kept short.** Six estimators —
 Linear, Cubic, Rolling mean, LOESS, Exponential fit, and Rolling Hilbert for
@@ -46,7 +46,7 @@ Feature count goes from 100 to 108 on a long recording.
 a five-colour palette and got the palette back twice, so two pairs of concepts
 were indistinguishable. Concept is now carried by hue *and* marker shape.
 
-**New documentation**: a [Preprocessing](preprocessing.md) reference page, and a
+**New documentation**: a [Preprocessing](../preprocessing.md) reference page, and a
 [Control reference](controls.md) generated from the same text as the in-app
 tooltips, so the manual cannot drift from the app.
 
