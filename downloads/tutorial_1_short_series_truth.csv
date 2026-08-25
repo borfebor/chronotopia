@@ -1,0 +1,25 @@
+Sample,Class,Planted_rhythm,Detectable,True_period_h,True_peak_phase_CT_h,True_log2_amplitude,Noise_sd_log2
+ARNTL,Core clock,yes,yes,24.0,23.0,1.1,0.22
+CLOCK,Core clock,yes,no,24.0,21.0,0.15,0.2
+NPAS2,Core clock,yes,yes,24.0,23.5,0.9,0.26
+PER1,Core clock,yes,yes,24.0,10.0,1.0,0.22
+PER2,Core clock,yes,yes,24.0,13.0,1.2,0.22
+PER3,Core clock,yes,yes,24.0,12.0,1.0,0.28
+CRY1,Core clock,yes,yes,24.0,17.0,0.8,0.24
+CRY2,Core clock,yes,borderline,24.0,10.0,0.35,0.24
+NR1D1,Core clock,yes,yes,24.0,5.0,2.2,0.22
+NR1D2,Core clock,yes,yes,24.0,7.0,0.9,0.23
+DBP,Clock-controlled,yes,yes,24.0,10.0,1.8,0.22
+TEF,Clock-controlled,yes,yes,24.0,10.5,0.7,0.23
+HLF,Clock-controlled,yes,yes,24.0,11.0,0.8,0.25
+CIART,Clock-controlled,yes,yes,24.0,8.0,1.5,0.25
+RORA,Clock-controlled,yes,borderline,24.0,18.0,0.4,0.26
+WEE1,Clock-controlled,yes,yes,24.0,12.5,0.5,0.25
+SLC2A1,Clock-controlled,yes,borderline,24.0,2.0,0.3,0.24
+PPARGC1A,Clock-controlled,yes,yes,24.0,22.0,0.9,0.3
+ACTB,Non-rhythmic,no,no,,,0.0,0.14
+GAPDH,Non-rhythmic,no,no,,,0.0,0.15
+TUBB,Non-rhythmic,no,no,,,0.0,0.17
+RPL13A,Non-rhythmic,no,no,,,0.0,0.14
+B2M,Non-rhythmic,no,no,,,0.0,0.18
+HPRT1,Non-rhythmic,no,no,,,0.0,0.2
